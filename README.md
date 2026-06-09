@@ -45,6 +45,22 @@ Required call `[Analytics, sendScreen]` was not found.
 ❌ Semantic policy violations detected.
 ```
 
+## Release Assets
+
+`v*` タグ作成時に GitHub Release へ macOS 向けバイナリを自動添付します。  
+asset 名は次の形式です。
+
+```text
+rinter-<tag>-macos-<arch>.tar.gz
+```
+
+利用例:
+
+```bash
+tar -xzf rinter-v1.0.0-macos-arm64.tar.gz
+./rinter --help
+```
+
 ## Configuration
 
 Minimal policy:

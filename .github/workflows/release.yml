@@ -1,0 +1,70 @@
+name: Release Assets
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (example: v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${TAG}" ]]; then
+            echo "Tag is required."
+            exit 1
+          fi
+
+          ARCH="$(uname -m)"
+          ASSET_NAME="rinter-${TAG}-macos-${ARCH}.tar.gz"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "asset=${ASSET_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Package release asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp ./.build/release/rinter ./dist/rinter
+          tar -C dist -czf "${{ steps.meta.outputs.asset }}" rinter
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset }}
+          path: ${{ steps.meta.outputs.asset }}
+
+      - name: Create or update release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            ${{ steps.meta.outputs.asset }}
