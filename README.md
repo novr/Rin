@@ -8,6 +8,33 @@ It reads `Rinfile.swift`, evaluates changed Swift code with deterministic SwiftS
 - Missed required calls (authorization, logging, transaction cleanup) are hard to catch in review.
 - Rinter enforces these rules with static AST checks and fails CI when violations are found.
 
+## Installation
+
+### Homebrew (tap)
+
+```bash
+brew tap novr/taps
+brew trust --formula novr/taps/rinter
+brew install novr/taps/rinter
+```
+
+### Release tar.gz
+
+```bash
+curl -LO https://github.com/novr/Rin/releases/download/v<version>/rinter_<version>_darwin_arm64.tar.gz
+curl -LO https://github.com/novr/Rin/releases/download/v<version>/checksums.txt
+shasum -a 256 -c checksums.txt
+tar -xzf rinter_<version>_darwin_arm64.tar.gz
+./rinter --help
+```
+
+### From source
+
+```bash
+swift build -c release
+./.build/release/rinter --help
+```
+
 ## Quick Start
 
 1. Create `Rinfile.swift`:
@@ -43,24 +70,6 @@ let policy = Rin.Policy {
 Features/Home/HomeViewModel.swift:42:13: [viewmodel_tracks_screen]
 Required call `[Analytics, sendScreen]` was not found.
 ❌ Semantic policy violations detected.
-```
-
-## Release Assets
-
-`v*` タグ作成時に GitHub Release へ macOS 向けバイナリを自動添付します。  
-asset 名は次の形式です。
-
-```text
-rinter_<version>_darwin_<arch>.tar.gz
-checksums.txt
-```
-
-利用例:
-
-```bash
-shasum -a 256 -c checksums.txt
-tar -xzf rinter_1.0.0_darwin_arm64.tar.gz
-./rinter --help
 ```
 
 ## Configuration
