@@ -38,10 +38,36 @@ jobs:
             exit 1
           fi
 
+          VERSION="${TAG#v}"
           ARCH="$(uname -m)"
-          ASSET_NAME="rinter-${TAG}-macos-${ARCH}.tar.gz"
+          OS="darwin"
+          ASSET_NAME="rinter_${VERSION}_${OS}_${ARCH}.tar.gz"
+          if [[ "${VERSION}" == *"-rc."* || "${VERSION}" == *"-test."* ]]; then
+            PRERELEASE="true"
+          else
+            PRERELEASE="false"
+          fi
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "asset=${ASSET_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve Swift version hash
+        id: swift-version
+        shell: bash
+        run: |
+          echo "value=$(swift --version | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-spm-${{ steps.swift-version.outputs.value }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-${{ steps.swift-version.outputs.value }}-
+            ${{ runner.os }}-spm-
 
       - name: Build release binary
         run: swift build -c release
@@ -52,12 +78,15 @@ jobs:
           mkdir -p dist
           cp ./.build/release/rinter ./dist/rinter
           tar -C dist -czf "${{ steps.meta.outputs.asset }}" rinter
+          shasum -a 256 "${{ steps.meta.outputs.asset }}" > checksums.txt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.asset }}
-          path: ${{ steps.meta.outputs.asset }}
+          name: release-assets-macos
+          path: |
+            ${{ steps.meta.outputs.asset }}
+            checksums.txt
 
       - name: Create or update release with assets
         uses: softprops/action-gh-release@v2
@@ -65,6 +94,8 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
           overwrite_files: true
           files: |
             ${{ steps.meta.outputs.asset }}
+            checksums.txt

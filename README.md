@@ -51,13 +51,15 @@ Required call `[Analytics, sendScreen]` was not found.
 asset 名は次の形式です。
 
 ```text
-rinter-<tag>-macos-<arch>.tar.gz
+rinter_<version>_darwin_<arch>.tar.gz
+checksums.txt
 ```
 
 利用例:
 
 ```bash
-tar -xzf rinter-v1.0.0-macos-arm64.tar.gz
+shasum -a 256 -c checksums.txt
+tar -xzf rinter_1.0.0_darwin_arm64.tar.gz
 ./rinter --help
 ```
 
