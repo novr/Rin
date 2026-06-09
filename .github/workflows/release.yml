@@ -89,13 +89,30 @@ jobs:
             checksums.txt
 
       - name: Create or update release with assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          overwrite_files: true
-          files: |
-            ${{ steps.meta.outputs.asset }}
-            checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          TITLE="${TAG}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" \
+              "${{ steps.meta.outputs.asset }}" \
+              checksums.txt \
+              --clobber
+          else
+            if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
+              PRERELEASE_FLAG="--prerelease"
+            else
+              PRERELEASE_FLAG=""
+            fi
+
+            gh release create "${TAG}" \
+              "${{ steps.meta.outputs.asset }}" \
+              checksums.txt \
+              --target "${{ github.sha }}" \
+              --generate-notes \
+              --title "${TITLE}" \
+              ${PRERELEASE_FLAG}
+          fi
