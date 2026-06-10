@@ -42,11 +42,18 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         let collector = FunctionCallCollector(converter: converter, viewMode: .sourceAccurate)
         collector.walk(syntax)
         let calls = collector.calls
-        let catchCases = collector.catchCases
+        let catchClauses = collector.catchClauses
 
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
-            violations.append(contentsOf: evaluateRule(rule, calls: calls, catchCases: catchCases, filePath: file.path))
+            violations.append(
+                contentsOf: evaluateRule(
+                    rule,
+                    calls: calls,
+                    catchClauses: catchClauses,
+                    filePath: file.path
+                )
+            )
         }
         return violations
     }
@@ -54,12 +61,12 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
     private func evaluateRule(
         _ rule: RinRule,
         calls: [CallSite],
-        catchCases: [CatchCaseSite],
+        catchClauses: [CatchClauseSite],
         filePath: String
     ) -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
         let fallbackLocation = calls.first.map { ($0.line, $0.column) }
-            ?? catchCases.first.map { ($0.line, $0.column) }
+            ?? catchClauses.first.map { ($0.line, $0.column) }
             ?? (1, 1)
 
         for requiredCall in RuleBodyParser.mustCallTargets(in: rule.body) {
@@ -107,9 +114,11 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         }
 
         for errorCheck in RuleBodyParser.mustHandleErrorChecks(in: rule.body) {
+            // If a file has no catch clause, skip this rule.
+            guard !catchClauses.isEmpty else { continue }
             switch errorCheck {
             case .case(let requiredCase):
-                if !catchCases.contains(where: { $0.caseName == requiredCase }) {
+                if !catchClauses.contains(where: { $0.handledCases.contains(requiredCase) }) {
                     violations.append(
                         RinSemanticViolation(
                             ruleId: rule.id,
@@ -141,12 +150,9 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
 
 private final class FunctionCallCollector: SyntaxVisitor {
     private let converter: SourceLocationConverter
-    private var catchDepth: Int = 0
-    private let caseConditionRegex = try! NSRegularExpression(
-        pattern: #"^\s*case\s+\.([A-Za-z_][A-Za-z0-9_]*)\s*="#
-    )
+    private var catchClauseStack: [Int] = []
     private(set) var calls: [CallSite] = []
-    private(set) var catchCases: [CatchCaseSite] = []
+    private(set) var catchClauses: [CatchClauseSite] = []
 
     init(converter: SourceLocationConverter, viewMode: SyntaxTreeViewMode) {
         self.converter = converter
@@ -178,44 +184,65 @@ private final class FunctionCallCollector: SyntaxVisitor {
     }
 
     override func visit(_ node: CatchClauseSyntax) -> SyntaxVisitorContinueKind {
-        catchDepth += 1
+        let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
+        catchClauses.append(
+            CatchClauseSite(
+                line: location.line,
+                column: location.column,
+                handledCases: []
+            )
+        )
+        catchClauseStack.append(catchClauses.count - 1)
         return .visitChildren
     }
 
     override func visitPost(_ node: CatchClauseSyntax) {
-        catchDepth -= 1
+        _ = catchClauseStack.popLast()
     }
 
     override func visit(_ node: IfExprSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions, at: node.positionAfterSkippingLeadingTrivia)
+        collectCaseChecksIfNeeded(from: node.conditions)
         return .visitChildren
     }
 
     override func visit(_ node: GuardStmtSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions, at: node.positionAfterSkippingLeadingTrivia)
+        collectCaseChecksIfNeeded(from: node.conditions)
         return .visitChildren
     }
 
-    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax, at position: AbsolutePosition) {
-        guard catchDepth > 0 else { return }
+    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax) {
+        guard let currentCatchIndex = catchClauseStack.last else { return }
         for condition in conditions {
-            let text = condition.condition.trimmedDescription
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = caseConditionRegex.firstMatch(in: text, range: range),
-                  match.numberOfRanges == 2,
-                  let caseRange = Range(match.range(at: 1), in: text)
+            guard let matching = condition.condition.as(MatchingPatternConditionSyntax.self),
+                  let caseName = extractCaseName(from: matching.pattern)
             else {
                 continue
             }
-            let location = converter.location(for: position)
-            catchCases.append(
-                CatchCaseSite(
-                    caseName: String(text[caseRange]),
-                    line: location.line,
-                    column: location.column
-                )
-            )
+            catchClauses[currentCatchIndex].handledCases.insert(caseName)
         }
+    }
+
+    private func extractCaseName(from pattern: PatternSyntax) -> String? {
+        if let valueBinding = pattern.as(ValueBindingPatternSyntax.self) {
+            return extractCaseName(from: valueBinding.pattern)
+        }
+        if let expressionPattern = pattern.as(ExpressionPatternSyntax.self) {
+            if let member = expressionPattern.expression.as(MemberAccessExprSyntax.self),
+               member.base == nil {
+                return member.declName.baseName.text
+            }
+            if let declRef = expressionPattern.expression.as(DeclReferenceExprSyntax.self) {
+                return declRef.baseName.text
+            }
+        }
+        if let tuplePattern = pattern.as(TuplePatternSyntax.self) {
+            for element in tuplePattern.elements {
+                if let name = extractCaseName(from: element.pattern) {
+                    return name
+                }
+            }
+        }
+        return nil
     }
 }
 
@@ -251,20 +278,59 @@ private enum RuleBodyParser {
     }
 
     static func mustHandleErrorChecks(in body: String) -> [ErrorHandlingCheck] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"MustHandleError\(\s*check:\s*\.case\("([A-Za-z_][A-Za-z0-9_]*)"\)\s*\)"#
-        ) else {
+        let wrappedSource = """
+        func __rin_rule_body__() {
+        \(body)
+        }
+        """
+        let file = Parser.parse(source: wrappedSource)
+        guard let functionDecl = file.statements.first?.item.as(FunctionDeclSyntax.self) else {
             return []
         }
-        let range = NSRange(body.startIndex..<body.endIndex, in: body)
-        return regex.matches(in: body, range: range).compactMap { match in
-            guard match.numberOfRanges == 2,
-                  let caseRange = Range(match.range(at: 1), in: body)
+        guard let statements = functionDecl.body?.statements else {
+            return []
+        }
+        return statements.compactMap { statement in
+            guard let expression = statement.item.as(ExprSyntax.self),
+                  let callExpr = expression.as(FunctionCallExprSyntax.self),
+                  calledName(of: callExpr.calledExpression) == "MustHandleError"
             else {
                 return nil
             }
-            return .case(String(body[caseRange]))
+            guard let checkArg = callExpr.arguments.first(where: { $0.label?.text == "check" }),
+                  let caseCall = checkArg.expression.as(FunctionCallExprSyntax.self),
+                  calledName(of: caseCall.calledExpression) == "case",
+                  let firstArg = caseCall.arguments.first?.expression,
+                  let value = stringLiteralValue(firstArg)
+            else {
+                return nil
+            }
+            return .case(value)
         }
+    }
+
+    private static func calledName(of expression: ExprSyntax) -> String? {
+        if let declRef = expression.as(DeclReferenceExprSyntax.self) {
+            return declRef.baseName.text
+        }
+        if let member = expression.as(MemberAccessExprSyntax.self) {
+            return member.declName.baseName.text
+        }
+        return nil
+    }
+
+    private static func stringLiteralValue(_ expression: ExprSyntax) -> String? {
+        guard let literal = expression.as(StringLiteralExprSyntax.self) else {
+            return nil
+        }
+        var value = ""
+        for segment in literal.segments {
+            guard let text = segment.as(StringSegmentSyntax.self) else {
+                return nil
+            }
+            value += text.content.text
+        }
+        return value
     }
 
     private static func extractCallPatterns(withPattern pattern: String, from text: String) -> [RuleCallPattern] {
@@ -315,10 +381,10 @@ private struct CallSite {
     let column: Int
 }
 
-private struct CatchCaseSite {
-    let caseName: String
+private struct CatchClauseSite {
     let line: Int
     let column: Int
+    var handledCases: Set<String>
 }
 
 private enum ErrorHandlingCheck {

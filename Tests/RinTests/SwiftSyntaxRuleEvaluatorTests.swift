@@ -176,18 +176,26 @@ import Testing
         loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
     )
 
-    do {
-        try await engine.check()
-        Issue.record("Expected violations because case handling is outside catch")
-    } catch let error as RinterSemanticEngineError {
-        switch error {
-        case .violations(let violations):
-            #expect(violations.count == 1)
-            #expect(violations[0].reason.contains("case .cancelled"))
-        default:
-            Issue.record("Unexpected error: \(error)")
-        }
+    try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseSkipsFileWithoutCatch() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        _ = await fetch()
     }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
 }
 
 @Test func semanticEngineMustCallDoesNotTreatCaseMatchAsCall() async throws {
