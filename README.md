@@ -12,7 +12,6 @@ It reads `Rinfile.swift`, evaluates changed Swift code with deterministic SwiftS
 
 ### Requirements
 
-- Swift 6.2 or later
 - macOS 13 or later
 
 ### Homebrew (tap)
@@ -34,6 +33,8 @@ tar -xzf rinter_<version>_darwin_arm64.tar.gz
 ```
 
 ### From source
+
+- Build from source: Swift 6.2 or later
 
 ```bash
 swift build -c release
@@ -154,15 +155,20 @@ Rule(id: "authorization_any") {
 
 ```swift
 Rule(id: "store_catch_cancellation") {
-    MustHandleError(check: .case("cancelled"))
+    MustHandleError(target: .case("cancelled"), as: .through)
 }
 .scope(
-    include: ["**/Domain/Store/*Store.swift"],
-    exclude: []
+    include: ["**/Domain/Store/*Store.swift"]
 )
 .message("Store の catch では cancelled を読み捨てること。")
 .severity(.error)
 ```
+
+`MustHandleError` supports these handling modes:
+- `.through`
+- `.assign(to: "...")`
+- `.transform(by: "...")`
+- `.rethrow`
 
 ## Paired Calls
 
