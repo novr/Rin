@@ -7,11 +7,17 @@ struct DiffedSwiftFile: Equatable {
 
 enum GitDiffProviderError: Error, LocalizedError {
     case gitFailed(String)
+    case fileMetadataReadFailed(path: String)
+    case fileReadFailed(path: String, reason: String)
 
     var errorDescription: String? {
         switch self {
         case .gitFailed(let message):
             return "Failed to read git diff context: \(message)"
+        case .fileMetadataReadFailed(let path):
+            return "Failed to read file metadata: \(path)"
+        case .fileReadFailed(let path, let reason):
+            return "Failed to read Swift file \(path): \(reason)"
         }
     }
 }
@@ -35,8 +41,14 @@ struct GitDiffProvider {
 
         var paths: [String] = []
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
-            guard values?.isRegularFile == true else { continue }
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            } catch {
+                let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+                throw GitDiffProviderError.fileMetadataReadFailed(path: relativePath)
+            }
+            guard values.isRegularFile == true else { continue }
             let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
             paths.append(relativePath)
         }
@@ -92,9 +104,14 @@ struct GitDiffProvider {
     }
 
     private func readSwiftFiles(paths: [String], projectRootURL: URL) throws -> [DiffedSwiftFile] {
-        paths.compactMap { path in
+        try paths.map { path in
             let fileURL = projectRootURL.appendingPathComponent(path)
-            guard let source = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+            let source: String
+            do {
+                source = try String(contentsOf: fileURL, encoding: .utf8)
+            } catch {
+                throw GitDiffProviderError.fileReadFailed(path: path, reason: error.localizedDescription)
+            }
             return DiffedSwiftFile(path: path, source: source)
         }
     }

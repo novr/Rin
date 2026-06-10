@@ -9,6 +9,7 @@ protocol RinRuleEvaluating {
 
 enum SwiftSyntaxRuleEvaluatorError: Error, LocalizedError {
     case invalidSwiftFile(path: String, diagnostics: [String])
+    case invalidRuleBody(ruleID: String, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum SwiftSyntaxRuleEvaluatorError: Error, LocalizedError {
             Failed to parse Swift file: \(path)
             \(joinedDiagnostics)
             """
+        case .invalidRuleBody(let ruleID, let reason):
+            return "Failed to parse rule body for `\(ruleID)`: \(reason)"
         }
     }
 }
@@ -47,7 +50,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
             violations.append(
-                contentsOf: evaluateRule(
+                contentsOf: try evaluateRule(
                     rule,
                     calls: calls,
                     catchClauses: catchClauses,
@@ -63,13 +66,19 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         calls: [CallSite],
         catchClauses: [CatchClauseSite],
         filePath: String
-    ) -> [RinSemanticViolation] {
+    ) throws -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
         let fallbackLocation = calls.first.map { ($0.line, $0.column) }
             ?? catchClauses.first.map { ($0.line, $0.column) }
             ?? (1, 1)
+        let parsedRuleBody: ParsedRuleBody
+        do {
+            parsedRuleBody = try RuleBodyParser.parse(body: rule.body)
+        } catch let parserError as RuleBodyParserError {
+            throw SwiftSyntaxRuleEvaluatorError.invalidRuleBody(ruleID: rule.id, reason: parserError.localizedDescription)
+        }
 
-        for requiredCall in RuleBodyParser.mustCallTargets(in: rule.body) {
+        for requiredCall in parsedRuleBody.mustCallTargets {
             if !matches(requiredCall, in: calls) {
                 violations.append(
                     RinSemanticViolation(
@@ -83,7 +92,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
 
-        for anyGroup in RuleBodyParser.mustCallAnyOfGroups(in: rule.body) {
+        for anyGroup in parsedRuleBody.mustCallAnyOfGroups {
             if anyGroup.allSatisfy({ !matches($0, in: calls) }) {
                 violations.append(
                     RinSemanticViolation(
@@ -97,7 +106,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
 
-        for conditional in RuleBodyParser.whenCallsConditions(in: rule.body) {
+        for conditional in parsedRuleBody.whenCallsConditions {
             guard let triggerCall = firstMatch(conditional.trigger, in: calls) else { continue }
             let missing = conditional.requirements.filter { !matches($0, in: calls) }
             if !missing.isEmpty {
@@ -113,7 +122,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
 
-        for errorCheck in RuleBodyParser.mustHandleErrorChecks(in: rule.body) {
+        for errorCheck in parsedRuleBody.mustHandleErrorChecks {
             // If a file has no catch clause, skip this rule.
             guard !catchClauses.isEmpty else { continue }
             switch errorCheck {
@@ -143,7 +152,8 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         return calls.first { call in
             guard call.method == target.methodName else { return false }
             if target.typeName == "*" { return true }
-            return call.receiver == target.typeName
+            guard case .simpleName(let receiverName) = call.receiver else { return false }
+            return receiverName == target.typeName
         }
     }
 }
@@ -164,7 +174,7 @@ private final class FunctionCallCollector: SyntaxVisitor {
         if let declRef = node.calledExpression.as(DeclReferenceExprSyntax.self) {
             calls.append(
                 CallSite(
-                    receiver: nil,
+                    receiver: .none,
                     method: declRef.baseName.text,
                     line: location.line,
                     column: location.column
@@ -173,7 +183,7 @@ private final class FunctionCallCollector: SyntaxVisitor {
         } else if let memberAccess = node.calledExpression.as(MemberAccessExprSyntax.self) {
             calls.append(
                 CallSite(
-                    receiver: memberAccess.base?.trimmedDescription,
+                    receiver: parseReceiver(memberAccess.base),
                     method: memberAccess.declName.baseName.text,
                     line: location.line,
                     column: location.column
@@ -244,69 +254,124 @@ private final class FunctionCallCollector: SyntaxVisitor {
         }
         return nil
     }
+
+    private func parseReceiver(_ expression: ExprSyntax?) -> CallReceiver {
+        guard let expression else { return .none }
+        if let declRef = expression.as(DeclReferenceExprSyntax.self) {
+            return .simpleName(declRef.baseName.text)
+        }
+        return .complex
+    }
 }
 
 private enum RuleBodyParser {
-    static func mustCallTargets(in body: String) -> [RuleCallPattern] {
-        extractCallPatterns(withPattern: #"MustCall\((.*?)\)"#, from: body)
-    }
-
-    static func mustCallAnyOfGroups(in body: String) -> [[RuleCallPattern]] {
-        extractGroups(withPattern: #"MustCallAnyOf\(\[(.*?)\]\)"#, from: body)
-    }
-
-    static func whenCallsConditions(in body: String) -> [(trigger: RuleCallPattern, requirements: [RuleCallPattern])] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"WhenCalls\((.*?)\)\.mustAlsoCall\(\[(.*?)\]\)"#,
-            options: [.dotMatchesLineSeparators]
-        ) else {
-            return []
-        }
-        let range = NSRange(body.startIndex..<body.endIndex, in: body)
-        return regex.matches(in: body, range: range).compactMap { match in
-            guard match.numberOfRanges == 3,
-                  let triggerRange = Range(match.range(at: 1), in: body),
-                  let requirementsRange = Range(match.range(at: 2), in: body)
-            else {
-                return nil
-            }
-            let triggers = extractPairs(from: String(body[triggerRange]))
-            guard let trigger = triggers.first else { return nil }
-            let requirements = extractPairs(from: String(body[requirementsRange]))
-            return (trigger: trigger, requirements: requirements)
-        }
-    }
-
-    static func mustHandleErrorChecks(in body: String) -> [ErrorHandlingCheck] {
+    static func parse(body: String) throws -> ParsedRuleBody {
         let wrappedSource = """
         func __rin_rule_body__() {
         \(body)
         }
         """
         let file = Parser.parse(source: wrappedSource)
-        guard let functionDecl = file.statements.first?.item.as(FunctionDeclSyntax.self) else {
-            return []
+        guard !file.hasError else {
+            throw RuleBodyParserError.invalidSyntax("rule body contains invalid Swift syntax")
         }
-        guard let statements = functionDecl.body?.statements else {
-            return []
+        guard let functionDecl = file.statements.first?.item.as(FunctionDeclSyntax.self),
+              let statements = functionDecl.body?.statements
+        else {
+            throw RuleBodyParserError.invalidSyntax("failed to read wrapped function body")
         }
-        return statements.compactMap { statement in
+
+        var parsed = ParsedRuleBody()
+        for statement in statements {
             guard let expression = statement.item.as(ExprSyntax.self),
-                  let callExpr = expression.as(FunctionCallExprSyntax.self),
-                  calledName(of: callExpr.calledExpression) == "MustHandleError"
+                  let callExpr = expression.as(FunctionCallExprSyntax.self)
             else {
-                return nil
+                continue
             }
-            guard let checkArg = callExpr.arguments.first(where: { $0.label?.text == "check" }),
-                  let caseCall = checkArg.expression.as(FunctionCallExprSyntax.self),
-                  calledName(of: caseCall.calledExpression) == "case",
-                  let firstArg = caseCall.arguments.first?.expression,
-                  let value = stringLiteralValue(firstArg)
-            else {
-                return nil
+            let called = calledName(of: callExpr.calledExpression)
+            if called == "MustCall" {
+                guard let firstArg = callExpr.arguments.first?.expression else {
+                    throw RuleBodyParserError.invalidClause("MustCall requires a target")
+                }
+                parsed.mustCallTargets.append(try parseRuleCallPattern(firstArg))
+                continue
             }
-            return .case(value)
+            if called == "MustCallAnyOf" {
+                guard let firstArg = callExpr.arguments.first?.expression,
+                      let arrayExpr = firstArg.as(ArrayExprSyntax.self)
+                else {
+                    throw RuleBodyParserError.invalidClause("MustCallAnyOf requires array literal")
+                }
+                let patterns = try arrayExpr.elements.map { try parseRuleCallPattern($0.expression) }
+                parsed.mustCallAnyOfGroups.append(patterns)
+                continue
+            }
+            if called == "MustHandleError" {
+                guard let checkArg = callExpr.arguments.first(where: { $0.label?.text == "check" }),
+                      let caseCall = checkArg.expression.as(FunctionCallExprSyntax.self),
+                      calledName(of: caseCall.calledExpression) == "case",
+                      let firstArg = caseCall.arguments.first?.expression,
+                      let value = stringLiteralValue(firstArg)
+                else {
+                    throw RuleBodyParserError.invalidClause("MustHandleError(check: .case(\"...\")) is required")
+                }
+                parsed.mustHandleErrorChecks.append(.case(value))
+                continue
+            }
+            if called == "mustAlsoCall" {
+                guard let baseCall = callExpr.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self),
+                      calledName(of: baseCall.calledExpression) == "WhenCalls",
+                      let triggerExpr = baseCall.arguments.first?.expression
+                else {
+                    throw RuleBodyParserError.invalidClause("WhenCalls(...).mustAlsoCall(...) requires a trigger")
+                }
+                guard let reqExpr = callExpr.arguments.first?.expression,
+                      let reqArray = reqExpr.as(ArrayExprSyntax.self)
+                else {
+                    throw RuleBodyParserError.invalidClause("mustAlsoCall requires requirements array")
+                }
+                let trigger = try parseRuleCallPattern(triggerExpr)
+                let requirements = try reqArray.elements.map { try parseRuleCallPattern($0.expression) }
+                parsed.whenCallsConditions.append((trigger: trigger, requirements: requirements))
+            }
         }
+        return parsed
+    }
+
+    private static func parseRuleCallPattern(_ expression: ExprSyntax) throws -> RuleCallPattern {
+        if let arrayExpr = expression.as(ArrayExprSyntax.self) {
+            guard arrayExpr.elements.count == 2 else {
+                throw RuleBodyParserError.invalidClause("call pattern array requires two elements")
+            }
+            let typeName = try parsePatternName(arrayExpr.elements[arrayExpr.elements.startIndex].expression)
+            let methodName = try parsePatternName(arrayExpr.elements[arrayExpr.elements.index(after: arrayExpr.elements.startIndex)].expression)
+            return RuleCallPattern(typeName: typeName, methodName: methodName)
+        }
+        if let callExpr = expression.as(FunctionCallExprSyntax.self),
+           calledName(of: callExpr.calledExpression) == "RuleCallTarget" {
+            guard let typeArg = callExpr.arguments.first?.expression,
+                  let methodArg = callExpr.arguments.dropFirst().first?.expression
+            else {
+                throw RuleBodyParserError.invalidClause("RuleCallTarget requires type and method")
+            }
+            guard let typeName = stringLiteralValue(typeArg),
+                  let methodName = stringLiteralValue(methodArg)
+            else {
+                throw RuleBodyParserError.invalidClause("RuleCallTarget arguments must be string literals")
+            }
+            return RuleCallPattern(typeName: typeName, methodName: methodName)
+        }
+        throw RuleBodyParserError.invalidClause("unsupported call target expression: \(expression.trimmedDescription)")
+    }
+
+    private static func parsePatternName(_ expression: ExprSyntax) throws -> String {
+        if let declRef = expression.as(DeclReferenceExprSyntax.self) {
+            return declRef.baseName.text
+        }
+        if let string = stringLiteralValue(expression) {
+            return string
+        }
+        throw RuleBodyParserError.invalidClause("pattern element must be identifier or string literal")
     }
 
     private static func calledName(of expression: ExprSyntax) -> String? {
@@ -332,53 +397,38 @@ private enum RuleBodyParser {
         }
         return value
     }
+}
 
-    private static func extractCallPatterns(withPattern pattern: String, from text: String) -> [RuleCallPattern] {
-        extractGroups(withPattern: pattern, from: text).flatMap { $0 }
-    }
+private enum RuleBodyParserError: LocalizedError {
+    case invalidSyntax(String)
+    case invalidClause(String)
 
-    private static func extractGroups(withPattern pattern: String, from text: String) -> [[RuleCallPattern]] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
-            return []
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard match.numberOfRanges > 1,
-                  let bodyRange = Range(match.range(at: 1), in: text)
-            else {
-                return nil
-            }
-            return extractPairs(from: String(text[bodyRange]))
-        }
-    }
-
-    private static func extractPairs(from text: String) -> [RuleCallPattern] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"\[\s*([A-Za-z_][A-Za-z0-9_]*|\*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*|\*)\s*\]"#
-        ) else {
-            return []
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard match.numberOfRanges == 3,
-                  let typeRange = Range(match.range(at: 1), in: text),
-                  let methodRange = Range(match.range(at: 2), in: text)
-            else {
-                return nil
-            }
-            return RuleCallPattern(
-                typeName: String(text[typeRange]),
-                methodName: String(text[methodRange])
-            )
+    var errorDescription: String? {
+        switch self {
+        case .invalidSyntax(let reason), .invalidClause(let reason):
+            return reason
         }
     }
 }
 
+private struct ParsedRuleBody {
+    var mustCallTargets: [RuleCallPattern] = []
+    var mustCallAnyOfGroups: [[RuleCallPattern]] = []
+    var whenCallsConditions: [(trigger: RuleCallPattern, requirements: [RuleCallPattern])] = []
+    var mustHandleErrorChecks: [ErrorHandlingCheck] = []
+}
+
 private struct CallSite {
-    let receiver: String?
+    let receiver: CallReceiver
     let method: String
     let line: Int
     let column: Int
+}
+
+private enum CallReceiver {
+    case none
+    case simpleName(String)
+    case complex
 }
 
 private struct CatchClauseSite {

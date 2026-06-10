@@ -200,7 +200,7 @@ import Testing
 
 @Test func semanticEngineMustCallDoesNotTreatCaseMatchAsCall() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "must-call-cancelled", body: "MustCall([*, cancelled])", message: nil, severity: .error)
+        RinRule(id: "must-call-cancelled", body: #"MustCall(RuleCallTarget("*", "cancelled"))"#, message: nil, severity: .error)
     ])
     let source = """
     func run() async {
@@ -226,6 +226,39 @@ import Testing
         case .violations(let violations):
             #expect(violations.count == 1)
             #expect(violations[0].reason.contains("[*, cancelled]"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustCallDoesNotMatchComplexReceiverToTypeName() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "must-call", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+    ])
+    let source = """
+    struct API {
+        let analytics: Analytics
+        func run() {
+            api.analytics.sendAnalytics()
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation because complex receiver should not match type name")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("[Analytics, sendAnalytics]"))
         default:
             Issue.record("Unexpected error: \(error)")
         }
