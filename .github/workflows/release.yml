@@ -19,7 +19,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -27,6 +27,7 @@ jobs:
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TAG="${{ inputs.tag }}"
           else
@@ -47,10 +48,12 @@ jobs:
           else
             PRERELEASE="false"
           fi
-          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "asset=${ASSET_NAME}" >> "${GITHUB_OUTPUT}"
-          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "asset=${ASSET_NAME}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Resolve Swift version hash
         id: swift-version
@@ -59,7 +62,7 @@ jobs:
           echo "value=$(swift --version | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
 
       - name: Cache SwiftPM artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             .build
@@ -73,15 +76,19 @@ jobs:
         run: swift build -c release
 
       - name: Package release asset
+        id: package
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp ./.build/release/rinter ./dist/rinter
           tar -C dist -czf "${{ steps.meta.outputs.asset }}" rinter
-          shasum -a 256 "${{ steps.meta.outputs.asset }}" > checksums.txt
+          SHA256="$(shasum -a 256 "${{ steps.meta.outputs.asset }}" | cut -d' ' -f1)"
+          echo "${SHA256}  ${{ steps.meta.outputs.asset }}" > checksums.txt
+          echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets-macos
           path: |
@@ -93,6 +100,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
           TITLE="${TAG}"
 
@@ -116,3 +124,32 @@ jobs:
               --title "${TITLE}" \
               ${PRERELEASE_FLAG}
           fi
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NOVRD_BOT_APP_ID }}
+          private-key: ${{ secrets.NOVRD_BOT_KEY }}
+          owner: novr
+          repositories: homebrew-taps
+
+      - name: Dispatch homebrew formula update
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/novr/homebrew-taps/dispatches \
+            --method POST \
+            --input - <<EOF
+          {
+            "event_type": "update-formula",
+            "client_payload": {
+              "formula": "rinter",
+              "version": "${{ steps.meta.outputs.version }}",
+              "url": "https://github.com/novr/Rin/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset }}",
+              "sha256": "${{ steps.package.outputs.sha256 }}"
+            }
+          }
+          EOF
