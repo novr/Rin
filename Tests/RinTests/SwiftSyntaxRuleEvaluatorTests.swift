@@ -104,7 +104,7 @@ import Testing
 
 @Test func semanticEngineMustHandleErrorCasePassesWhenCaseIsHandledInCatch() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
     ])
     let source = """
     func run() async {
@@ -128,7 +128,7 @@ import Testing
 
 @Test func semanticEngineMustHandleErrorCaseFailsWhenCatchDoesNotHandleCase() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
     ])
     let source = """
     func run() async {
@@ -160,9 +160,157 @@ import Testing
     }
 }
 
+@Test func semanticEngineMustHandleErrorCaseFailsWhenCaseIsNotIgnored() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error {
+                print("ignore")
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations for non-ignored cancelled case handling")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("through"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustHandleErrorCaseSupportsAssignHandling() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .assign(to: "error"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error {
+                self.error = error
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseAssignFailsWhenAssignmentOutsideCaseBlock() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .assign(to: "error"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error {
+                print("noop")
+            }
+            self.error = error
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation because assignment is outside cancelled case block")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("assignment handling"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustHandleErrorCaseSupportsTransformHandling() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .transform(by: "mappingToAppError"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error {
+                _ = mappingToAppError(error)
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseSupportsRethrowHandling() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .rethrow)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async throws {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error {
+                throw error
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
 @Test func semanticEngineMustHandleErrorCaseIgnoresNonCatchCaseMatch() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
     ])
     let source = """
     func run(error: AppError) {
@@ -181,7 +329,7 @@ import Testing
 
 @Test func semanticEngineMustHandleErrorCaseSkipsFileWithoutCatch() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
     ])
     let source = """
     func run() async {

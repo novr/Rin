@@ -150,13 +150,33 @@ struct RuleClause {
     }
 }
 
-enum ErrorCheck {
+enum ErrorTarget {
     case `case`(String)
 
     fileprivate var rendered: String {
         switch self {
         case .case(let name):
             return #".case("\#(name)")"#
+        }
+    }
+}
+
+enum ErrorHandling {
+    case through
+    case assign(to: String)
+    case transform(by: String)
+    case rethrow
+
+    fileprivate var rendered: String {
+        switch self {
+        case .through:
+            return ".through"
+        case .assign(let target):
+            return #".assign(to: "\#(target)")"#
+        case .transform(let function):
+            return #".transform(by: "\#(function)")"#
+        case .rethrow:
+            return ".rethrow"
         }
     }
 }
@@ -175,8 +195,12 @@ struct RuleCallTarget {
     }
 }
 
-func MustHandleError(check: ErrorCheck) -> RuleClause {
-    RuleClause("MustHandleError(check: \(check.rendered))")
+func MustHandleError(target: ErrorTarget, as handling: ErrorHandling) -> RuleClause {
+    RuleClause("MustHandleError(target: \(target.rendered), as: \(handling.rendered))")
+}
+
+func MustHandleError(check: ErrorTarget) -> RuleClause {
+    MustHandleError(target: check, as: .through)
 }
 
 func MustCall(_ target: RuleCallTarget) -> RuleClause {

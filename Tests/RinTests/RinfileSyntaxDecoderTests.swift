@@ -82,7 +82,7 @@ import Testing
     let policy = Rin.Policy {
         Rules {
             Rule(id: "handle_cancelled") {
-                MustHandleError(check: .case("cancelled"))
+                MustHandleError(target: .case("cancelled"), as: .through)
             }
         }
     }
@@ -90,5 +90,5 @@ import Testing
 
     let policy = try RinfileSyntaxDecoder().decode(source: source)
     #expect(policy.rules.count == 1)
-    #expect(policy.rules[0].body.contains(#"MustHandleError(check: .case("cancelled"))"#))
+    #expect(policy.rules[0].body.contains(#"MustHandleError(target: .case("cancelled"), as: .through)"#))
 }

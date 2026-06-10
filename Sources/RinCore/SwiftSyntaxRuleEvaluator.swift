@@ -125,13 +125,58 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         for errorCheck in parsedRuleBody.mustHandleErrorChecks {
             // If a file has no catch clause, skip this rule.
             guard !catchClauses.isEmpty else { continue }
-            switch errorCheck {
-            case .case(let requiredCase):
-                if !catchClauses.contains(where: { $0.handledCases.contains(requiredCase) }) {
+            switch errorCheck.handling {
+            case .through:
+                if !catchClauses.contains(where: { $0.ignoredCases.contains(errorCheck.targetCase) }) {
                     violations.append(
                         RinSemanticViolation(
                             ruleId: rule.id,
-                            reason: "Required catch handling `case .\(requiredCase)` was not found.",
+                            reason: "Required through catch handling `case .\(errorCheck.targetCase)` was not found.",
+                            file: filePath,
+                            line: fallbackLocation.0,
+                            column: fallbackLocation.1
+                        )
+                    )
+                }
+            case .assign(let target):
+                if !catchClauses.contains(where: {
+                    $0.handledCases.contains(errorCheck.targetCase) &&
+                        ($0.caseHandling[errorCheck.targetCase]?.assignedTargets.contains(target) ?? false)
+                }) {
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: rule.id,
+                            reason: "Required assignment handling for `case .\(errorCheck.targetCase)` to `\(target)` was not found.",
+                            file: filePath,
+                            line: fallbackLocation.0,
+                            column: fallbackLocation.1
+                        )
+                    )
+                }
+            case .transform(let functionName):
+                if !catchClauses.contains(where: {
+                    $0.handledCases.contains(errorCheck.targetCase) &&
+                        ($0.caseHandling[errorCheck.targetCase]?.calledFunctions.contains(functionName) ?? false)
+                }) {
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: rule.id,
+                            reason: "Required transform handling for `case .\(errorCheck.targetCase)` using `\(functionName)` was not found.",
+                            file: filePath,
+                            line: fallbackLocation.0,
+                            column: fallbackLocation.1
+                        )
+                    )
+                }
+            case .rethrow:
+                if !catchClauses.contains(where: {
+                    $0.handledCases.contains(errorCheck.targetCase) &&
+                        ($0.caseHandling[errorCheck.targetCase]?.hasThrow ?? false)
+                }) {
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: rule.id,
+                            reason: "Required rethrow handling for `case .\(errorCheck.targetCase)` was not found.",
                             file: filePath,
                             line: fallbackLocation.0,
                             column: fallbackLocation.1
@@ -199,7 +244,9 @@ private final class FunctionCallCollector: SyntaxVisitor {
             CatchClauseSite(
                 line: location.line,
                 column: location.column,
-                handledCases: []
+                handledCases: [],
+                ignoredCases: [],
+                caseHandling: [:]
             )
         )
         catchClauseStack.append(catchClauses.count - 1)
@@ -211,16 +258,16 @@ private final class FunctionCallCollector: SyntaxVisitor {
     }
 
     override func visit(_ node: IfExprSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions)
+        collectCaseChecksIfNeeded(from: node.conditions, ifBody: node.body)
         return .visitChildren
     }
 
     override func visit(_ node: GuardStmtSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions)
+        collectCaseChecksIfNeeded(from: node.conditions, ifBody: nil)
         return .visitChildren
     }
 
-    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax) {
+    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax, ifBody: CodeBlockSyntax?) {
         guard let currentCatchIndex = catchClauseStack.last else { return }
         for condition in conditions {
             guard let matching = condition.condition.as(MatchingPatternConditionSyntax.self),
@@ -229,7 +276,25 @@ private final class FunctionCallCollector: SyntaxVisitor {
                 continue
             }
             catchClauses[currentCatchIndex].handledCases.insert(caseName)
+            if let ifBody, bodyContainsReturn(ifBody) {
+                catchClauses[currentCatchIndex].ignoredCases.insert(caseName)
+                updateCaseHandling(caseName: caseName, body: ifBody, catchIndex: currentCatchIndex)
+            } else if let ifBody {
+                updateCaseHandling(caseName: caseName, body: ifBody, catchIndex: currentCatchIndex)
+            }
         }
+    }
+
+    private func bodyContainsReturn(_ body: CodeBlockSyntax) -> Bool {
+        for statement in body.statements {
+            if statement.item.as(ReturnStmtSyntax.self) != nil {
+                return true
+            }
+            if let nestedIf = statement.item.as(IfExprSyntax.self), bodyContainsReturn(nestedIf.body) {
+                return true
+            }
+        }
+        return false
     }
 
     private func extractCaseName(from pattern: PatternSyntax) -> String? {
@@ -261,6 +326,55 @@ private final class FunctionCallCollector: SyntaxVisitor {
             return .simpleName(declRef.baseName.text)
         }
         return .complex
+    }
+
+    private func updateCaseHandling(caseName: String, body: CodeBlockSyntax, catchIndex: Int) {
+        var handling = catchClauses[catchIndex].caseHandling[caseName] ?? CaseHandlingSnapshot()
+        for statement in body.statements {
+            if let expression = statement.item.as(ExprSyntax.self),
+               let sequence = expression.as(SequenceExprSyntax.self) {
+                let parts = Array(sequence.elements)
+                if parts.count >= 3,
+                   parts[1].as(AssignmentExprSyntax.self) != nil,
+                   let target = extractAssignmentTarget(parts[0]) {
+                    handling.assignedTargets.insert(target)
+                }
+                for part in parts {
+                    if let callExpr = part.as(FunctionCallExprSyntax.self) {
+                        if let declRef = callExpr.calledExpression.as(DeclReferenceExprSyntax.self) {
+                            handling.calledFunctions.insert(declRef.baseName.text)
+                        } else if let member = callExpr.calledExpression.as(MemberAccessExprSyntax.self) {
+                            handling.calledFunctions.insert(member.declName.baseName.text)
+                        }
+                    }
+                }
+            }
+            if let expression = statement.item.as(ExprSyntax.self),
+               let callExpr = expression.as(FunctionCallExprSyntax.self) {
+                if let declRef = callExpr.calledExpression.as(DeclReferenceExprSyntax.self) {
+                    handling.calledFunctions.insert(declRef.baseName.text)
+                } else if let member = callExpr.calledExpression.as(MemberAccessExprSyntax.self) {
+                    handling.calledFunctions.insert(member.declName.baseName.text)
+                }
+            }
+            if statement.item.as(ThrowStmtSyntax.self) != nil {
+                handling.hasThrow = true
+            }
+            if let nestedIf = statement.item.as(IfExprSyntax.self) {
+                updateCaseHandling(caseName: caseName, body: nestedIf.body, catchIndex: catchIndex)
+            }
+        }
+        catchClauses[catchIndex].caseHandling[caseName] = handling
+    }
+
+    private func extractAssignmentTarget(_ expression: ExprSyntax) -> String? {
+        if let declRef = expression.as(DeclReferenceExprSyntax.self) {
+            return declRef.baseName.text
+        }
+        if let member = expression.as(MemberAccessExprSyntax.self) {
+            return member.declName.baseName.text
+        }
+        return nil
     }
 }
 
@@ -307,15 +421,20 @@ private enum RuleBodyParser {
                 continue
             }
             if called == "MustHandleError" {
-                guard let checkArg = callExpr.arguments.first(where: { $0.label?.text == "check" }),
-                      let caseCall = checkArg.expression.as(FunctionCallExprSyntax.self),
+                let targetArg = callExpr.arguments.first(where: { $0.label?.text == "target" })
+                    ?? callExpr.arguments.first(where: { $0.label?.text == "check" })
+                guard let targetArg,
+                      let caseCall = targetArg.expression.as(FunctionCallExprSyntax.self),
                       calledName(of: caseCall.calledExpression) == "case",
                       let firstArg = caseCall.arguments.first?.expression,
                       let value = stringLiteralValue(firstArg)
                 else {
-                    throw RuleBodyParserError.invalidClause("MustHandleError(check: .case(\"...\")) is required")
+                    throw RuleBodyParserError.invalidClause("MustHandleError(target: .case(\"...\"), as: <handling>) is required")
                 }
-                parsed.mustHandleErrorChecks.append(.case(value))
+                let handling = try parseErrorHandling(callExpr.arguments)
+                parsed.mustHandleErrorChecks.append(
+                    ErrorHandlingCheck(targetCase: value, handling: handling)
+                )
                 continue
             }
             if called == "mustAlsoCall" {
@@ -397,6 +516,42 @@ private enum RuleBodyParser {
         }
         return value
     }
+
+    private static func parseErrorHandling(_ arguments: LabeledExprListSyntax) throws -> ErrorHandlingKind {
+        guard let asArg = arguments.first(where: { $0.label?.text == "as" }) else {
+            throw RuleBodyParserError.invalidClause("MustHandleError requires `as:` handling.")
+        }
+        if let member = asArg.expression.as(MemberAccessExprSyntax.self) {
+            switch member.declName.baseName.text {
+            case "through":
+                return .through
+            case "rethrow":
+                return .rethrow
+            default:
+                throw RuleBodyParserError.invalidClause("Unknown MustHandleError handling: .\(member.declName.baseName.text)")
+            }
+        }
+        if let call = asArg.expression.as(FunctionCallExprSyntax.self),
+           let called = calledName(of: call.calledExpression) {
+            switch called {
+            case "assign":
+                if let toArg = call.arguments.first(where: { $0.label?.text == "to" })?.expression,
+                   let value = stringLiteralValue(toArg) {
+                    return .assign(to: value)
+                }
+                throw RuleBodyParserError.invalidClause("as: .assign(to: \"...\") requires a string literal")
+            case "transform":
+                if let byArg = call.arguments.first(where: { $0.label?.text == "by" })?.expression,
+                   let value = stringLiteralValue(byArg) {
+                    return .transform(by: value)
+                }
+                throw RuleBodyParserError.invalidClause("as: .transform(by: \"...\") requires a string literal")
+            default:
+                throw RuleBodyParserError.invalidClause("Unknown MustHandleError handling call: \(called)")
+            }
+        }
+        throw RuleBodyParserError.invalidClause("Unknown MustHandleError handling syntax")
+    }
 }
 
 private enum RuleBodyParserError: LocalizedError {
@@ -435,10 +590,26 @@ private struct CatchClauseSite {
     let line: Int
     let column: Int
     var handledCases: Set<String>
+    var ignoredCases: Set<String>
+    var caseHandling: [String: CaseHandlingSnapshot]
 }
 
-private enum ErrorHandlingCheck {
-    case `case`(String)
+private struct ErrorHandlingCheck {
+    let targetCase: String
+    let handling: ErrorHandlingKind
+}
+
+private enum ErrorHandlingKind {
+    case through
+    case assign(to: String)
+    case transform(by: String)
+    case rethrow
+}
+
+private struct CaseHandlingSnapshot {
+    var assignedTargets: Set<String> = []
+    var calledFunctions: Set<String> = []
+    var hasThrow: Bool = false
 }
 
 private struct RuleCallPattern {
