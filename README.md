@@ -145,6 +145,20 @@ Rule(id: "authorization_any") {
 }
 ```
 
+## Error Handling
+
+```swift
+Rule(id: "store_catch_cancellation") {
+    MustHandleError(check: .case("cancelled"))
+}
+.scope(
+    include: ["**/Domain/Store/*Store.swift"],
+    exclude: []
+)
+.message("Store の catch では cancelled を読み捨てること。")
+.severity(.error)
+```
+
 ## Paired Calls
 
 ```swift
@@ -200,7 +214,7 @@ jobs:
 - Parse `Rinfile.swift` with SwiftSyntax.
 - Collect changed Swift files from git diff.
 - Collect call sites in each file.
-- Evaluate `MustCall`, `MustCallAnyOf`, and `WhenCalls`.
+- Evaluate `MustCall`, `MustCallAnyOf`, `MustHandleError`, and `WhenCalls`.
 - Exit non-zero on violations or runtime errors.
 
 ## Limitations

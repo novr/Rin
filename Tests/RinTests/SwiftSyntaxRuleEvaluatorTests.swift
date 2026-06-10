@@ -101,3 +101,125 @@ import Testing
         }
     }
 }
+
+@Test func semanticEngineMustHandleErrorCasePassesWhenCaseIsHandledInCatch() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error { return }
+            print(error)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseFailsWhenCatchDoesNotHandleCase() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            print(error)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations for missing cancelled case handling")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("case .cancelled"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustHandleErrorCaseIgnoresNonCatchCaseMatch() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(check: .case("cancelled"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run(error: AppError) {
+        if case .cancelled = error { return }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations because case handling is outside catch")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("case .cancelled"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustCallDoesNotTreatCaseMatchAsCall() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "must-call-cancelled", body: "MustCall([*, cancelled])", message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .cancelled = error { return }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations because MustCall only checks call sites")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("[*, cancelled]"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}

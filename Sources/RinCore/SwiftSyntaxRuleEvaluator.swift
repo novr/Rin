@@ -1,5 +1,6 @@
 import Foundation
 import SwiftParser
+import SwiftParserDiagnostics
 import SwiftSyntax
 
 protocol RinRuleEvaluating {
@@ -7,12 +8,19 @@ protocol RinRuleEvaluating {
 }
 
 enum SwiftSyntaxRuleEvaluatorError: Error, LocalizedError {
-    case invalidSwiftFile(String)
+    case invalidSwiftFile(path: String, diagnostics: [String])
 
     var errorDescription: String? {
         switch self {
-        case .invalidSwiftFile(let path):
-            return "Failed to parse Swift file: \(path)"
+        case .invalidSwiftFile(let path, let diagnostics):
+            if diagnostics.isEmpty {
+                return "Failed to parse Swift file: \(path)"
+            }
+            let joinedDiagnostics = diagnostics.joined(separator: "\n")
+            return """
+            Failed to parse Swift file: \(path)
+            \(joinedDiagnostics)
+            """
         }
     }
 }
@@ -21,17 +29,24 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
     func evaluate(file: DiffedSwiftFile, policy: RinPolicy) throws -> [RinSemanticViolation] {
         let syntax = Parser.parse(source: file.source)
         guard !syntax.hasError else {
-            throw SwiftSyntaxRuleEvaluatorError.invalidSwiftFile(file.path)
+            let converter = SourceLocationConverter(fileName: file.path, tree: syntax)
+            let diagnostics = ParseDiagnosticsGenerator.diagnostics(for: syntax).map { diagnostic in
+                let position = diagnostic.position
+                let location = converter.location(for: position)
+                return "\(location.line):\(location.column) \(diagnostic.message)"
+            }
+            throw SwiftSyntaxRuleEvaluatorError.invalidSwiftFile(path: file.path, diagnostics: diagnostics)
         }
 
         let converter = SourceLocationConverter(fileName: file.path, tree: syntax)
         let collector = FunctionCallCollector(converter: converter, viewMode: .sourceAccurate)
         collector.walk(syntax)
         let calls = collector.calls
+        let catchCases = collector.catchCases
 
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
-            violations.append(contentsOf: evaluateRule(rule, calls: calls, filePath: file.path))
+            violations.append(contentsOf: evaluateRule(rule, calls: calls, catchCases: catchCases, filePath: file.path))
         }
         return violations
     }
@@ -39,10 +54,13 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
     private func evaluateRule(
         _ rule: RinRule,
         calls: [CallSite],
+        catchCases: [CatchCaseSite],
         filePath: String
     ) -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
-        let fallbackLocation = calls.first.map { ($0.line, $0.column) } ?? (1, 1)
+        let fallbackLocation = calls.first.map { ($0.line, $0.column) }
+            ?? catchCases.first.map { ($0.line, $0.column) }
+            ?? (1, 1)
 
         for requiredCall in RuleBodyParser.mustCallTargets(in: rule.body) {
             if !matches(requiredCall, in: calls) {
@@ -88,6 +106,23 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
 
+        for errorCheck in RuleBodyParser.mustHandleErrorChecks(in: rule.body) {
+            switch errorCheck {
+            case .case(let requiredCase):
+                if !catchCases.contains(where: { $0.caseName == requiredCase }) {
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: rule.id,
+                            reason: "Required catch handling `case .\(requiredCase)` was not found.",
+                            file: filePath,
+                            line: fallbackLocation.0,
+                            column: fallbackLocation.1
+                        )
+                    )
+                }
+            }
+        }
+
         return violations
     }
 
@@ -106,7 +141,12 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
 
 private final class FunctionCallCollector: SyntaxVisitor {
     private let converter: SourceLocationConverter
+    private var catchDepth: Int = 0
+    private let caseConditionRegex = try! NSRegularExpression(
+        pattern: #"^\s*case\s+\.([A-Za-z_][A-Za-z0-9_]*)\s*="#
+    )
     private(set) var calls: [CallSite] = []
+    private(set) var catchCases: [CatchCaseSite] = []
 
     init(converter: SourceLocationConverter, viewMode: SyntaxTreeViewMode) {
         self.converter = converter
@@ -135,6 +175,47 @@ private final class FunctionCallCollector: SyntaxVisitor {
             )
         }
         return .visitChildren
+    }
+
+    override func visit(_ node: CatchClauseSyntax) -> SyntaxVisitorContinueKind {
+        catchDepth += 1
+        return .visitChildren
+    }
+
+    override func visitPost(_ node: CatchClauseSyntax) {
+        catchDepth -= 1
+    }
+
+    override func visit(_ node: IfExprSyntax) -> SyntaxVisitorContinueKind {
+        collectCaseChecksIfNeeded(from: node.conditions, at: node.positionAfterSkippingLeadingTrivia)
+        return .visitChildren
+    }
+
+    override func visit(_ node: GuardStmtSyntax) -> SyntaxVisitorContinueKind {
+        collectCaseChecksIfNeeded(from: node.conditions, at: node.positionAfterSkippingLeadingTrivia)
+        return .visitChildren
+    }
+
+    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax, at position: AbsolutePosition) {
+        guard catchDepth > 0 else { return }
+        for condition in conditions {
+            let text = condition.condition.trimmedDescription
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = caseConditionRegex.firstMatch(in: text, range: range),
+                  match.numberOfRanges == 2,
+                  let caseRange = Range(match.range(at: 1), in: text)
+            else {
+                continue
+            }
+            let location = converter.location(for: position)
+            catchCases.append(
+                CatchCaseSite(
+                    caseName: String(text[caseRange]),
+                    line: location.line,
+                    column: location.column
+                )
+            )
+        }
     }
 }
 
@@ -166,6 +247,23 @@ private enum RuleBodyParser {
             guard let trigger = triggers.first else { return nil }
             let requirements = extractPairs(from: String(body[requirementsRange]))
             return (trigger: trigger, requirements: requirements)
+        }
+    }
+
+    static func mustHandleErrorChecks(in body: String) -> [ErrorHandlingCheck] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"MustHandleError\(\s*check:\s*\.case\("([A-Za-z_][A-Za-z0-9_]*)"\)\s*\)"#
+        ) else {
+            return []
+        }
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        return regex.matches(in: body, range: range).compactMap { match in
+            guard match.numberOfRanges == 2,
+                  let caseRange = Range(match.range(at: 1), in: body)
+            else {
+                return nil
+            }
+            return .case(String(body[caseRange]))
         }
     }
 
@@ -215,6 +313,16 @@ private struct CallSite {
     let method: String
     let line: Int
     let column: Int
+}
+
+private struct CatchCaseSite {
+    let caseName: String
+    let line: Int
+    let column: Int
+}
+
+private enum ErrorHandlingCheck {
+    case `case`(String)
 }
 
 private struct RuleCallPattern {

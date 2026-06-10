@@ -150,6 +150,17 @@ struct RuleClause {
     }
 }
 
+enum ErrorCheck {
+    case `case`(String)
+
+    fileprivate var rendered: String {
+        switch self {
+        case .case(let name):
+            return #".case("\#(name)")"#
+        }
+    }
+}
+
 struct RuleCallTarget {
     let typeName: String
     let methodName: String
@@ -162,6 +173,10 @@ struct RuleCallTarget {
     fileprivate var rendered: String {
         "[\(typeName), \(methodName)]"
     }
+}
+
+func MustHandleError(check: ErrorCheck) -> RuleClause {
+    RuleClause("MustHandleError(check: \(check.rendered))")
 }
 
 func MustCall(_ target: RuleCallTarget) -> RuleClause {

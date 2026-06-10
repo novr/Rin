@@ -76,3 +76,19 @@ import Testing
     #expect(policy.rules[0].scopeInclude == ["Features/**/*.swift"])
     #expect(policy.rules[0].scopeExclude == ["**/*Mock*.swift"])
 }
+
+@Test func rinfileDecoderParsesMustHandleErrorCheckCaseClause() throws {
+    let source = #"""
+    let policy = Rin.Policy {
+        Rules {
+            Rule(id: "handle_cancelled") {
+                MustHandleError(check: .case("cancelled"))
+            }
+        }
+    }
+    """#
+
+    let policy = try RinfileSyntaxDecoder().decode(source: source)
+    #expect(policy.rules.count == 1)
+    #expect(policy.rules[0].body.contains(#"MustHandleError(check: .case("cancelled"))"#))
+}
