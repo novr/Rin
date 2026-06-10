@@ -164,11 +164,12 @@ Rule(id: "transaction_pair") {
 ## CLI
 
 ```bash
-./.build/release/rinter [--config <path>] [--rule <id>] [--verbose]
+./.build/release/rinter [--config <path>] [--rule <id>] [-a|--all-files] [--verbose]
 ```
 
 - `-c`, `--config`: path to `Rinfile.swift` (default: `Rinfile.swift`)
 - `-r`, `--rule`: evaluate only the specified rule id
+- `-a`, `--all-files`: evaluate all Swift files under project root (not just git diff)
 - `-v`, `--verbose`: verbose logs during evaluation
 - `-h`, `--help`: show help
 

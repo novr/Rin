@@ -8,7 +8,7 @@ enum RinterSemanticEngineError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noSwiftFilesToCheck:
-            return "No changed Swift files to evaluate."
+            return "No Swift files to evaluate."
         case .violations(let violations):
             let details = violations.map {
                 let location = [($0.file ?? "unknown"), $0.line.map(String.init) ?? "?", $0.column.map(String.init) ?? "?"]
@@ -35,6 +35,7 @@ struct RinterSemanticEngine {
         rinfileURL: URL,
         rinfileLoader: RinfileLoader = .init(),
         diffProvider: GitDiffProvider = .init(),
+        checkAllFiles: Bool = false,
         evaluator: RinRuleEvaluating = SwiftSyntaxRuleEvaluator(),
         logger: RinLogger = ConsoleLogger(verbose: false)
     ) {
@@ -42,7 +43,10 @@ struct RinterSemanticEngine {
         self.rinfileURL = rinfileURL
         self.loadPolicy = rinfileLoader.load
         self.loadFiles = { root in
-            try diffProvider.changedSwiftFiles(projectRootURL: root)
+            if checkAllFiles {
+                return try diffProvider.allSwiftFiles(projectRootURL: root)
+            }
+            return try diffProvider.changedSwiftFiles(projectRootURL: root)
         }
         self.evaluator = evaluator
         self.logger = logger

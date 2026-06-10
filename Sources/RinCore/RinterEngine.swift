@@ -23,12 +23,14 @@ public struct RinterEngine {
         projectRootURL: URL,
         rinfileURL: URL,
         ruleFilter: String? = nil,
-        verbose: Bool = false
+        verbose: Bool = false,
+        checkAllFiles: Bool = false
     ) {
         let logger = ConsoleLogger(verbose: verbose)
         self.semanticEngine = RinterSemanticEngine(
             projectRootURL: projectRootURL,
             rinfileURL: rinfileURL,
+            checkAllFiles: checkAllFiles,
             logger: logger
         )
         self.ruleFilter = ruleFilter
@@ -56,7 +58,7 @@ public struct RinterEngine {
         } catch let semanticError as RinterSemanticEngineError {
             switch semanticError {
             case .noSwiftFilesToCheck:
-                logger.info("No changed Swift files to evaluate.")
+                logger.info("No Swift files to evaluate.")
             case .violations(let violations):
                 logger.error("Semantic policy violation(s) found.")
                 for violation in violations {

@@ -20,12 +20,28 @@ struct GitDiffProvider {
     init() {}
 
     func changedSwiftFiles(projectRootURL: URL) throws -> [DiffedSwiftFile] {
-        let filePaths = try changedSwiftPaths(projectRootURL: projectRootURL)
-        return filePaths.compactMap { path in
-            let fileURL = projectRootURL.appendingPathComponent(path)
-            guard let source = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
-            return DiffedSwiftFile(path: path, source: source)
+        try readSwiftFiles(paths: changedSwiftPaths(projectRootURL: projectRootURL), projectRootURL: projectRootURL)
+    }
+
+    func allSwiftFiles(projectRootURL: URL) throws -> [DiffedSwiftFile] {
+        let rootURL = projectRootURL.standardizedFileURL
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
         }
+
+        var paths: [String] = []
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+            paths.append(relativePath)
+        }
+
+        return try readSwiftFiles(paths: paths.sorted(), projectRootURL: rootURL)
     }
 
     private func changedSwiftPaths(projectRootURL: URL) throws -> [String] {
@@ -73,5 +89,13 @@ struct GitDiffProvider {
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let raw = String(data: data, encoding: .utf8) ?? ""
         return raw.split(separator: "\n").map(String.init)
+    }
+
+    private func readSwiftFiles(paths: [String], projectRootURL: URL) throws -> [DiffedSwiftFile] {
+        paths.compactMap { path in
+            let fileURL = projectRootURL.appendingPathComponent(path)
+            guard let source = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+            return DiffedSwiftFile(path: path, source: source)
+        }
     }
 }

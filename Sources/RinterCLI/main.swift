@@ -18,13 +18,17 @@ struct RinterCLI: AsyncParsableCommand {
     @Flag(name: [.short, .long], help: "Enable verbose output")
     var verbose = false
 
+    @Flag(name: [.short, .long], help: "Evaluate all Swift files under project root")
+    var allFiles = false
+
     mutating func run() async throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let engine = RinterEngine(
             projectRootURL: root,
             rinfileURL: root.appendingPathComponent(config),
             ruleFilter: rule,
-            verbose: verbose
+            verbose: verbose,
+            checkAllFiles: allFiles
         )
 
         do {
