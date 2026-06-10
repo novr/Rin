@@ -10,6 +10,11 @@ It reads `Rinfile.swift`, evaluates changed Swift code with deterministic SwiftS
 
 ## Installation
 
+### Requirements
+
+- Swift 6.2 or later
+- macOS 13 or later
+
 ### Homebrew (tap)
 
 ```bash
@@ -205,6 +210,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
       - run: swift build -c release
       - run: ./.build/release/rinter --config Rinfile.swift
 ```
