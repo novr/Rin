@@ -48,7 +48,7 @@ import Testing
     let policy = Rin.Policy {
         Rules {
             Rule(id: "no_dynamic") {
-                MustCall([Analytics, sendAnalytics])
+                MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))
             }
         }
     }
@@ -64,7 +64,7 @@ import Testing
     let policy = Rin.Policy {
         Rules {
             Rule(id: "scoped_rule") {
-                MustCall(RuleCallTarget("Analytics", "sendScreen"))
+                MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen"))
             }
             .scope(include: ["Features/**/*.swift"], exclude: ["**/*Mock*.swift"])
         }

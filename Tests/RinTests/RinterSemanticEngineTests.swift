@@ -7,7 +7,7 @@ import Testing
         include: ["Sources/App/**/*.swift"],
         exclude: ["Sources/App/Generated/**"],
         rules: [
-            RinRule(id: "rule", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+            RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
         ]
     )
     let engine = RinterSemanticEngine(
@@ -42,7 +42,7 @@ import Testing
         include: ["**/*+Injection.swift"],
         exclude: [],
         rules: [
-            RinRule(id: "rule", body: "MustCall([Resolver, register])", message: nil, severity: .error)
+            RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Resolver"), method: "register"))"#, message: nil, severity: .error)
         ]
     )
     let engine = RinterSemanticEngine(
@@ -78,7 +78,7 @@ import Testing
         rules: [
             RinRule(
                 id: "viewmodel_analytics",
-                body: "MustCall([Analytics, sendScreen])",
+                body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen"))"#,
                 scopeInclude: ["**/*ViewModel.swift"]
             )
         ]

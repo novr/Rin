@@ -181,17 +181,34 @@ enum ErrorHandling {
     }
 }
 
+enum RuleCallReceiver {
+    case symbol(String)
+    case none
+    case any
+
+    fileprivate var rendered: String {
+        switch self {
+        case .symbol(let value):
+            return #".symbol("\#(value)")"#
+        case .none:
+            return ".none"
+        case .any:
+            return ".any"
+        }
+    }
+}
+
 struct RuleCallTarget {
-    let typeName: String
+    let receiver: RuleCallReceiver
     let methodName: String
 
-    init(_ typeName: String, _ methodName: String) {
-        self.typeName = typeName
-        self.methodName = methodName
+    init(receiver: RuleCallReceiver, method: String) {
+        self.receiver = receiver
+        self.methodName = method
     }
 
     fileprivate var rendered: String {
-        "[\(typeName), \(methodName)]"
+        #"RuleCallTarget(receiver: \#(receiver.rendered), method: "\#(methodName)")"#
     }
 }
 

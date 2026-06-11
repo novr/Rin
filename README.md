@@ -54,7 +54,7 @@ let policy = Rin.Policy {
     Rules {
         Rule(id: "viewmodel_tracks_screen") {
             MustCall(
-                RuleCallTarget("Analytics", "sendScreen")
+                RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
             )
         }
         .message("ViewModel entry flows must send screen analytics.")
@@ -74,7 +74,7 @@ let policy = Rin.Policy {
 ```text
 ❌ Semantic policy violation(s) found.
 Features/Home/HomeViewModel.swift:42:13: [viewmodel_tracks_screen]
-Required call `[Analytics, sendScreen]` was not found.
+Required call `[symbol(Analytics), sendScreen]` was not found.
 ❌ Semantic policy violations detected.
 ```
 
@@ -91,7 +91,7 @@ let policy = Rin.Policy {
     Rules {
         Rule(id: "viewmodel_tracks_screen") {
             MustCall(
-                RuleCallTarget("Analytics", "sendScreen")
+                RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
             )
         }
         .scope(
@@ -123,7 +123,7 @@ Use `Rule.scope(include:exclude:)` to narrow a rule to specific files.
 ```swift
 Rule(id: "viewmodel_tracks_screen") {
     MustCall(
-        RuleCallTarget("Analytics", "sendScreen")
+        RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
     )
 }
 .scope(
@@ -139,14 +139,14 @@ Rule(id: "viewmodel_tracks_screen") {
 ```swift
 Rule(id: "authorization_single") {
     MustCall(
-        RuleCallTarget("Authorizer", "authorize")
+        RuleCallTarget(receiver: .symbol("Authorizer"), method: "authorize")
     )
 }
 
 Rule(id: "authorization_any") {
     MustCallAnyOf([
-        RuleCallTarget("Authorizer", "authorize"),
-        RuleCallTarget("Authorizer", "can")
+        RuleCallTarget(receiver: .symbol("Authorizer"), method: "authorize"),
+        RuleCallTarget(receiver: .symbol("Authorizer"), method: "can")
     ])
 }
 ```
@@ -175,10 +175,10 @@ Rule(id: "store_catch_cancellation") {
 ```swift
 Rule(id: "transaction_pair") {
     WhenCalls(
-        RuleCallTarget("DB", "beginTransaction"),
+        RuleCallTarget(receiver: .symbol("DB"), method: "beginTransaction"),
         mustAlsoCall: [
-            RuleCallTarget("DB", "commit"),
-            RuleCallTarget("DB", "rollback")
+            RuleCallTarget(receiver: .symbol("DB"), method: "commit"),
+            RuleCallTarget(receiver: .symbol("DB"), method: "rollback")
         ]
     )
 }
@@ -234,7 +234,7 @@ jobs:
 ## Limitations
 
 - File-local AST evaluation only.
-- Receiver matching is syntax-based (`Type.method`).
+- Receiver matching is syntax-based (`.symbol("name")` matches base identifier exactly).
 - Scope control is path-based (`Target` and `Rule.scope`).
 
 ## Special Thanks

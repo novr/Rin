@@ -6,7 +6,7 @@ let policy = Rin.Policy {
     Rules {
         Rule(id: "cli_returns_exitcode") {
             MustCall(
-                RuleCallTarget("ExitCode", "rawValue")
+                RuleCallTarget(receiver: .symbol("ExitCode"), method: "rawValue")
             )
         }
         .scope(include: ["Sources/RinterCLI/main.swift"])
@@ -15,7 +15,7 @@ let policy = Rin.Policy {
 
         Rule(id: "engine_wraps_violation_error") {
             MustCall(
-                RuleCallTarget("RinterEngineError", "violation")
+                RuleCallTarget(receiver: .symbol("RinterEngineError"), method: "violation")
             )
         }
         .scope(include: ["Sources/RinCore/RinterEngine.swift"])
@@ -24,7 +24,7 @@ let policy = Rin.Policy {
 
         Rule(id: "engine_wraps_runtime_error") {
             MustCall(
-                RuleCallTarget("RinterEngineError", "runtime")
+                RuleCallTarget(receiver: .symbol("RinterEngineError"), method: "runtime")
             )
         }
         .scope(include: ["Sources/RinCore/RinterEngine.swift"])
@@ -33,9 +33,9 @@ let policy = Rin.Policy {
 
         Rule(id: "plugin_waits_for_process") {
             WhenCalls(
-                RuleCallTarget("process", "run"),
+                RuleCallTarget(receiver: .symbol("process"), method: "run"),
                 mustAlsoCall: [
-                    RuleCallTarget("process", "waitUntilExit")
+                    RuleCallTarget(receiver: .symbol("process"), method: "waitUntilExit")
                 ]
             )
         }
@@ -45,9 +45,9 @@ let policy = Rin.Policy {
 
         Rule(id: "gitdiff_waits_for_process") {
             WhenCalls(
-                RuleCallTarget("process", "run"),
+                RuleCallTarget(receiver: .symbol("process"), method: "run"),
                 mustAlsoCall: [
-                    RuleCallTarget("process", "waitUntilExit")
+                    RuleCallTarget(receiver: .symbol("process"), method: "waitUntilExit")
                 ]
             )
         }

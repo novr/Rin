@@ -196,9 +196,16 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
     private func firstMatch(_ target: RuleCallPattern, in calls: [CallSite]) -> CallSite? {
         return calls.first { call in
             guard call.method == target.methodName else { return false }
-            if target.typeName == "*" { return true }
-            guard case .simpleName(let receiverName) = call.receiver else { return false }
-            return receiverName == target.typeName
+            switch target.receiver {
+            case .any:
+                return true
+            case .none:
+                if case .none = call.receiver { return true }
+                return false
+            case .symbol(let name):
+                guard case .simpleName(let receiverName) = call.receiver else { return false }
+                return receiverName == name
+            }
         }
     }
 }
@@ -258,16 +265,16 @@ private final class FunctionCallCollector: SyntaxVisitor {
     }
 
     override func visit(_ node: IfExprSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions, ifBody: node.body)
+        collectCaseChecksIfNeeded(from: node.conditions, caseBody: node.body)
         return .visitChildren
     }
 
     override func visit(_ node: GuardStmtSyntax) -> SyntaxVisitorContinueKind {
-        collectCaseChecksIfNeeded(from: node.conditions, ifBody: nil)
+        collectCaseChecksIfNeeded(from: node.conditions, caseBody: nil)
         return .visitChildren
     }
 
-    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax, ifBody: CodeBlockSyntax?) {
+    private func collectCaseChecksIfNeeded(from conditions: ConditionElementListSyntax, caseBody: CodeBlockSyntax?) {
         guard let currentCatchIndex = catchClauseStack.last else { return }
         for condition in conditions {
             guard let matching = condition.condition.as(MatchingPatternConditionSyntax.self),
@@ -276,21 +283,26 @@ private final class FunctionCallCollector: SyntaxVisitor {
                 continue
             }
             catchClauses[currentCatchIndex].handledCases.insert(caseName)
-            if let ifBody, bodyContainsReturn(ifBody) {
+            if let caseBody, bodyContainsThrough(caseBody) {
                 catchClauses[currentCatchIndex].ignoredCases.insert(caseName)
-                updateCaseHandling(caseName: caseName, body: ifBody, catchIndex: currentCatchIndex)
-            } else if let ifBody {
-                updateCaseHandling(caseName: caseName, body: ifBody, catchIndex: currentCatchIndex)
+                updateCaseHandling(caseName: caseName, body: caseBody, catchIndex: currentCatchIndex)
+            } else if let caseBody {
+                updateCaseHandling(caseName: caseName, body: caseBody, catchIndex: currentCatchIndex)
             }
         }
     }
 
-    private func bodyContainsReturn(_ body: CodeBlockSyntax) -> Bool {
+    private func bodyContainsThrough(_ body: CodeBlockSyntax) -> Bool {
         for statement in body.statements {
-            if statement.item.as(ReturnStmtSyntax.self) != nil {
+            if statement.item.as(ReturnStmtSyntax.self) != nil ||
+                statement.item.as(ContinueStmtSyntax.self) != nil ||
+                statement.item.as(BreakStmtSyntax.self) != nil {
                 return true
             }
-            if let nestedIf = statement.item.as(IfExprSyntax.self), bodyContainsReturn(nestedIf.body) {
+            if let nestedIf = statement.item.as(IfExprSyntax.self), bodyContainsThrough(nestedIf.body) {
+                return true
+            }
+            if let nestedGuard = statement.item.as(GuardStmtSyntax.self), bodyContainsThrough(nestedGuard.body) {
                 return true
             }
         }
@@ -458,39 +470,41 @@ private enum RuleBodyParser {
     }
 
     private static func parseRuleCallPattern(_ expression: ExprSyntax) throws -> RuleCallPattern {
-        if let arrayExpr = expression.as(ArrayExprSyntax.self) {
-            guard arrayExpr.elements.count == 2 else {
-                throw RuleBodyParserError.invalidClause("call pattern array requires two elements")
-            }
-            let typeName = try parsePatternName(arrayExpr.elements[arrayExpr.elements.startIndex].expression)
-            let methodName = try parsePatternName(arrayExpr.elements[arrayExpr.elements.index(after: arrayExpr.elements.startIndex)].expression)
-            return RuleCallPattern(typeName: typeName, methodName: methodName)
-        }
         if let callExpr = expression.as(FunctionCallExprSyntax.self),
            calledName(of: callExpr.calledExpression) == "RuleCallTarget" {
-            guard let typeArg = callExpr.arguments.first?.expression,
-                  let methodArg = callExpr.arguments.dropFirst().first?.expression
+            guard let receiverArg = callExpr.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
+                  let methodArg = callExpr.arguments.first(where: { $0.label?.text == "method" })?.expression
             else {
-                throw RuleBodyParserError.invalidClause("RuleCallTarget requires type and method")
+                throw RuleBodyParserError.invalidClause("RuleCallTarget(receiver: ..., method: ...) is required")
             }
-            guard let typeName = stringLiteralValue(typeArg),
-                  let methodName = stringLiteralValue(methodArg)
-            else {
-                throw RuleBodyParserError.invalidClause("RuleCallTarget arguments must be string literals")
+            let receiver = try parseReceiverPattern(receiverArg)
+            guard let methodName = stringLiteralValue(methodArg) else {
+                throw RuleBodyParserError.invalidClause("RuleCallTarget method must be a string literal")
             }
-            return RuleCallPattern(typeName: typeName, methodName: methodName)
+            return RuleCallPattern(receiver: receiver, methodName: methodName)
         }
         throw RuleBodyParserError.invalidClause("unsupported call target expression: \(expression.trimmedDescription)")
     }
 
-    private static func parsePatternName(_ expression: ExprSyntax) throws -> String {
-        if let declRef = expression.as(DeclReferenceExprSyntax.self) {
-            return declRef.baseName.text
+    private static func parseReceiverPattern(_ expression: ExprSyntax) throws -> RuleReceiverPattern {
+        if let member = expression.as(MemberAccessExprSyntax.self),
+           member.base == nil {
+            switch member.declName.baseName.text {
+            case "any":
+                return .any
+            case "none":
+                return .none
+            default:
+                throw RuleBodyParserError.invalidClause("Unknown receiver pattern .\(member.declName.baseName.text)")
+            }
         }
-        if let string = stringLiteralValue(expression) {
-            return string
+        if let call = expression.as(FunctionCallExprSyntax.self),
+           calledName(of: call.calledExpression) == "symbol",
+           let arg = call.arguments.first?.expression,
+           let value = stringLiteralValue(arg) {
+            return .symbol(value)
         }
-        throw RuleBodyParserError.invalidClause("pattern element must be identifier or string literal")
+        throw RuleBodyParserError.invalidClause("receiver must be .any, .none, or .symbol(\"...\")")
     }
 
     private static func calledName(of expression: ExprSyntax) -> String? {
@@ -613,11 +627,24 @@ private struct CaseHandlingSnapshot {
 }
 
 private struct RuleCallPattern {
-    let typeName: String
+    let receiver: RuleReceiverPattern
     let methodName: String
 
     var rendered: String {
-        "[\(typeName), \(methodName)]"
+        switch receiver {
+        case .any:
+            return "[any, \(methodName)]"
+        case .none:
+            return "[none, \(methodName)]"
+        case .symbol(let name):
+            return "[symbol(\(name)), \(methodName)]"
+        }
     }
+}
+
+private enum RuleReceiverPattern {
+    case symbol(String)
+    case none
+    case any
 }
 

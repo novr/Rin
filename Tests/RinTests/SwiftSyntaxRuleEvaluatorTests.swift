@@ -4,7 +4,7 @@ import Testing
 
 @Test func semanticEngineThrowsViolationWhenRequiredMethodIsMissing() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "rule", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+        RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
     ])
     let engine = RinterSemanticEngine(
         projectRootURL: URL(fileURLWithPath: "/tmp"),
@@ -32,7 +32,7 @@ import Testing
 
 @Test func semanticEnginePassesWhenRequiredMethodExists() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "rule", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+        RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
     ])
     let engine = RinterSemanticEngine(
         projectRootURL: URL(fileURLWithPath: "/tmp"),
@@ -44,7 +44,31 @@ import Testing
     try await engine.check()
 }
 
-@Test func semanticEngineSupportsMultilineMustCallAnyOf() async throws {
+@Test func semanticEngineRejectsLegacyArrayCallTargetSyntax() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "rule", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() {}")] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected invalid rule body for legacy MustCall array syntax")
+    } catch let error as SwiftSyntaxRuleEvaluatorError {
+        switch error {
+        case .invalidRuleBody(_, let reason):
+            #expect(reason.contains("unsupported call target expression"))
+        default:
+            Issue.record("Unexpected evaluator error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineRejectsLegacyArrayCallTargetSyntaxInMustCallAnyOf() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
         RinRule(
             id: "rule-any",
@@ -52,6 +76,73 @@ import Testing
             MustCallAnyOf([
             [Analytics, sendScreen],
             [Analytics, sendTap]
+            ])
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() {}")] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected invalid rule body for legacy MustCallAnyOf array syntax")
+    } catch let error as SwiftSyntaxRuleEvaluatorError {
+        switch error {
+        case .invalidRuleBody(_, let reason):
+            #expect(reason.contains("unsupported call target expression"))
+        default:
+            Issue.record("Unexpected evaluator error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineRejectsLegacyArrayCallTargetSyntaxInWhenCalls() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "rule-when",
+            body: """
+            WhenCalls([Analytics, sendScreen]).mustAlsoCall([
+            [Analytics, sendContext]
+            ])
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() {}")] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected invalid rule body for legacy WhenCalls array syntax")
+    } catch let error as SwiftSyntaxRuleEvaluatorError {
+        switch error {
+        case .invalidRuleBody(_, let reason):
+            #expect(reason.contains("unsupported call target expression"))
+        default:
+            Issue.record("Unexpected evaluator error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineSupportsMultilineMustCallAnyOf() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "rule-any",
+            body: """
+            MustCallAnyOf([
+            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen"),
+            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendTap")
             ])
             """,
             message: nil,
@@ -73,8 +164,8 @@ import Testing
         RinRule(
             id: "rule-when",
             body: """
-            WhenCalls([Analytics, sendScreen]).mustAlsoCall([
-            [Analytics, sendContext]
+            WhenCalls(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")).mustAlsoCall([
+            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendContext")
             ])
             """,
             message: nil,
@@ -124,6 +215,41 @@ import Testing
     )
 
     try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseFailsWhenGuardElseReturnsForNonTargetCase() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            guard case .cancelled = error else { return }
+            print("handled")
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations because guard else return does not exit target case")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("through"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
 }
 
 @Test func semanticEngineMustHandleErrorCaseFailsWhenCatchDoesNotHandleCase() async throws {
@@ -194,6 +320,32 @@ import Testing
             Issue.record("Unexpected error: \(error)")
         }
     }
+}
+
+@Test func semanticEngineMustHandleErrorCasePassesWhenCaseBreaksLoop() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            while true {
+                if case .cancelled = error { break }
+                break
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
 }
 
 @Test func semanticEngineMustHandleErrorCaseSupportsAssignHandling() async throws {
@@ -348,7 +500,7 @@ import Testing
 
 @Test func semanticEngineMustCallDoesNotTreatCaseMatchAsCall() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "must-call-cancelled", body: #"MustCall(RuleCallTarget("*", "cancelled"))"#, message: nil, severity: .error)
+        RinRule(id: "must-call-cancelled", body: #"MustCall(RuleCallTarget(receiver: .any, method: "cancelled"))"#, message: nil, severity: .error)
     ])
     let source = """
     func run() async {
@@ -373,7 +525,7 @@ import Testing
         switch error {
         case .violations(let violations):
             #expect(violations.count == 1)
-            #expect(violations[0].reason.contains("[*, cancelled]"))
+            #expect(violations[0].reason.contains("[any, cancelled]"))
         default:
             Issue.record("Unexpected error: \(error)")
         }
@@ -382,7 +534,7 @@ import Testing
 
 @Test func semanticEngineMustCallDoesNotMatchComplexReceiverToTypeName() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
-        RinRule(id: "must-call", body: "MustCall([Analytics, sendAnalytics])", message: nil, severity: .error)
+        RinRule(id: "must-call", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
     ])
     let source = """
     struct API {
@@ -406,9 +558,28 @@ import Testing
         switch error {
         case .violations(let violations):
             #expect(violations.count == 1)
-            #expect(violations[0].reason.contains("[Analytics, sendAnalytics]"))
+            #expect(violations[0].reason.contains("[symbol(Analytics), sendAnalytics]"))
         default:
             Issue.record("Unexpected error: \(error)")
         }
     }
+}
+
+@Test func semanticEngineMustCallSupportsNoneReceiverPattern() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "must-call-mapper", body: #"MustCall(RuleCallTarget(receiver: .none, method: "mappingToAppError"))"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() {
+        _ = mappingToAppError(error)
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
 }
