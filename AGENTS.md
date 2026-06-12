@@ -1,54 +1,30 @@
 # AGENTS.md
 
-## Target Audience
-This document is a strict runtime instruction for AI code generation agents and a baseline for human PR reviewers.
-Every change must satisfy both the underlying Why and the non-negotiable What/What Not.
+## 概要
+- この文書は、コードだけでは伝わらない非自明な運用ルールのみを定義する。
 
-## Intent
-This document preserves decision intent, not implementation trivia.
-When uncertain, prioritize long-term rule clarity, deterministic behavior, and reviewer trust.
+## コード規約
+- ルール意味論（抽出・照合・違反判定）は AST ベースで実装する。
+- `Rinfile.swift` デコードと evaluator 判定は `SwiftSyntax` / `SwiftParser` を使う。
+- 禁止: `NSRegularExpression`、Swift `Regex`、文字列スライスによる意味論実装。
+- 1ルール1責務を保ち、意図が名前と本文から読める DSL を維持する。
+- DSL/API は表現力よりも意図の明確化を優先して追加する。
 
----
+## テスト
+- DSL デコードまたは evaluator 意味論を変更したら、両方の観点のテストを更新する。
 
-## Why & Non-Negotiable Rules
+## 境界
+- Fail-closed を維持する。不確実な解析/評価は成功扱いにしない。
+- 警告のみで `0` 終了するフォールバックは禁止。
+- 終了コード契約は厳守する:
+  - `0`: pass
+  - `1`: policy violations
+  - `2`: runtime/config/parser errors
+- AST で構造的に実装できないルールは導入しない。
 
-### 1. Why This Project Exists
-- Policy regressions are expensive because they often pass compilation and surface late.
-- Static, deterministic checks reduce review variance and make failures explainable.
-- The tool should make architecture rules explicit so teams share the same mental model.
-
-### 2. Why Rules Must Stay Explicit
-- A rule name should communicate intent without requiring source dives.
-- Each rule should enforce one architectural contract to avoid ambiguous pass/fail outcomes.
-- Scope should stay unsurprising so policy adoption remains low-friction.
-
-### 3. Why Analysis Must Be Structural
-- Structural analysis is resilient to formatting and stylistic churn.
-- Semantics must not depend on incidental text shape.
-- Predictable diagnostics are more important than permissive matching.
-- Here, "rule semantics" means rule extraction, condition matching, and violation decision logic.
-- MUST NOT: Use `NSRegularExpression`, Swift `Regex`, or ad-hoc string slicing to implement rule semantics.
-- MUST: Keep both DSL decoding (`Rinfile.swift`) and evaluator-side detection on AST walking (`SwiftSyntax` / `SwiftParser`).
-- MUST NOT: Add rules that cannot be implemented structurally with AST.
-
-### 4. Why Fail-Closed
-- Silent success is riskier than explicit failure for policy tooling.
-- Uncertain parsing or evaluation should stop the run so results remain trustworthy.
-- MUST NOT: Implement warning-only fallbacks that still exit with `0`.
-- MUST: Keep the exit-code contract strict (`0` pass, `1` policy violations, `2` runtime/config/parser errors).
-
----
-
-## Operational Constraints
-- Prefer minimal, intention-preserving evolution over broad feature expansion.
-- Add DSL/API surface only when it clarifies intent, not just expressiveness.
-- MUST NOT: Introduce runtime dependencies that risk cross-platform portability.
-
-## Quality Gate
-Before proposing completion or PR readiness, verify:
-1. Local execution path works (`swift run rinter`).
-2. Deterministic tests cover changed behavior, including exit-code contract (`0`, `1`, `2`) where relevant.
-3. If a change touches DSL decoding or evaluator semantics, tests for both sides must be updated or confirmed.
-
-## Enforcement
-- Violations of non-negotiable rules are reject reasons for PR review.
+## GIT
+- 変更は最小・意図保存で行い、大きな無関係リファクタは避ける。
+- changelog は release note でのみ扱う（ファイル運用はしない）。
+- コミットは関心ごとを分離し、差分に沿ったConventional Commitsを使う。
+- 無関係ファイルはコミットに含めない。
+- 非交渉ルール（AST-first / fail-closed / exit-code 契約）違反は PR reject 理由。

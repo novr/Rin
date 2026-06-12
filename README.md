@@ -202,6 +202,7 @@ Rule(id: "transaction_pair") {
 - `-r`, `--rule`: evaluate only the specified rule id
 - `-a`, `--all-files`: evaluate all Swift files under project root (not just git diff)
 - `-v`, `--verbose`: verbose logs during evaluation
+- `--version`: show rinter version
 - `-h`, `--help`: show help
 
 Alternative execution:

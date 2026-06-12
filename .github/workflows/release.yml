@@ -77,6 +77,16 @@ jobs:
             ${{ runner.os }}-spm-${{ steps.swift-version.outputs.value }}-
             ${{ runner.os }}-spm-
 
+      - name: Embed release version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Sources/RinterCLI/RinterCLIVersion.swift <<EOF
+          enum RinterCLIVersion {
+              static let value = "${{ steps.meta.outputs.version }}"
+          }
+          EOF
+
       - name: Build release binary
         run: swift build -c release
 

@@ -6,7 +6,8 @@ import RinCore
 struct RinterCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "rinter",
-        abstract: "Run semantic policy checks from Rinfile.swift."
+        abstract: "Run semantic policy checks from Rinfile.swift.",
+        version: RinterCLIVersion.value
     )
 
     @Option(name: [.short, .long], help: "Path to Rinfile.swift")
