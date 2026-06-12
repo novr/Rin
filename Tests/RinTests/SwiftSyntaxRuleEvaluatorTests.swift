@@ -348,6 +348,67 @@ import Testing
     try await engine.check()
 }
 
+@Test func semanticEngineMustHandleErrorCasePassesWhenTargetCaseContinuesLoop() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            while true {
+                if case .cancelled = error { continue }
+                break
+            }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustHandleErrorCaseFailsWhenOnlyNonTargetCaseReturns() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .through)"#, message: nil, severity: .error)
+    ])
+    let source = """
+    func run() async {
+        do {
+            try await fetch()
+        } catch {
+            if case .network = error { return }
+            if case .cancelled = error { print("handled") }
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violations because target case does not exit control flow")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("through"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
 @Test func semanticEngineMustHandleErrorCaseSupportsAssignHandling() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
         RinRule(id: "handle-cancelled", body: #"MustHandleError(target: .case("cancelled"), as: .assign(to: "error"))"#, message: nil, severity: .error)

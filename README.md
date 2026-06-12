@@ -170,6 +170,12 @@ Rule(id: "store_catch_cancellation") {
 - `.transform(by: "...")`
 - `.rethrow`
 
+`as: .through` is considered satisfied only when the target case itself exits control flow (`return`, `break`, or `continue`).
+
+Examples:
+- OK: `if case .cancelled = error { return }`
+- NG: `guard case .cancelled = error else { return }` (the exit path is non-target side)
+
 ## Paired Calls
 
 ```swift
@@ -235,6 +241,7 @@ jobs:
 
 - File-local AST evaluation only.
 - Receiver matching is syntax-based (`.symbol("name")` matches base identifier exactly).
+- `.through` is syntax-based for control-flow exits and does not track jump destination semantics for nested loops/blocks.
 - Scope control is path-based (`Target` and `Rule.scope`).
 
 ## Special Thanks
