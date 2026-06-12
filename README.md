@@ -66,7 +66,7 @@ let policy = Rin.Policy {
 2. Run:
 
 ```bash
-./bin/rinter
+rinter
 ```
 
 3. Example output:
@@ -195,7 +195,7 @@ Rule(id: "transaction_pair") {
 ## CLI
 
 ```bash
-./.build/release/rinter [--config <path>] [--rule <id>] [-a|--all-files] [--verbose]
+rinter [--config <path>] [--rule <id>] [-a|--all-files] [--verbose]
 ```
 
 - `-c`, `--config`: path to `Rinfile.swift` (default: `Rinfile.swift`)
@@ -223,11 +223,16 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
-      - run: swift build -c release
-      - run: ./.build/release/rinter --config Rinfile.swift
+      - name: Download release binary
+        env:
+          RINTER_VERSION: "v1.0.0" # pin your desired release tag
+        run: |
+          curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/rinter_${RINTER_VERSION#v}_darwin_arm64.tar.gz"
+          curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/checksums.txt"
+          shasum -a 256 -c checksums.txt
+          tar -xzf "rinter_${RINTER_VERSION#v}_darwin_arm64.tar.gz"
+          chmod +x ./rinter
+      - run: ./rinter --config Rinfile.swift
 ```
 
 ## How It Works
