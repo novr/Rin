@@ -7,7 +7,7 @@ struct RinterPlugin: CommandPlugin {
         let tool = try context.tool(named: "RinterCLI")
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool.path.string)
+        process.executableURL = tool.url
         process.arguments = arguments
         process.standardOutput = FileHandle.standardOutput
         process.standardError = FileHandle.standardError
