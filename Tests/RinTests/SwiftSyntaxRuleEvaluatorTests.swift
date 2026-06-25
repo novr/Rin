@@ -141,8 +141,8 @@ import Testing
             id: "rule-any",
             body: """
             MustCallAnyOf([
-            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen"),
-            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendTap")
+            RuleCall(receiver: .symbol("Analytics"), method: "sendScreen"),
+            RuleCall(receiver: .symbol("Analytics"), method: "sendTap")
             ])
             """,
             message: nil,
@@ -164,9 +164,8 @@ import Testing
         RinRule(
             id: "rule-when",
             body: """
-            WhenCalls(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")).mustAlsoCall([
-            RuleCallTarget(receiver: .symbol("Analytics"), method: "sendContext")
-            ])
+            WhenCalls(receiver: .symbol("Analytics"), method: "sendScreen")
+            .mustAlsoCall(receiver: .symbol("Analytics"), method: "sendContext")
             """,
             message: nil,
             severity: .error
@@ -640,6 +639,283 @@ import Testing
         rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
         loadPolicy: { _ in policy },
         loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineWhenCallsNameWithMustDeclarePassesForPerformerBinding() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            MustDeclare(.local(binding: LocalBindingConstraint(identifier: "performer", typePattern: .anyConformance("WitnessActionPerformer"), initializerIdentifier: "store")))
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    protocol WitnessActionPerformer<Action> {}
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(store: Any) -> ProductStoreWitness {
+            let performer: any WitnessActionPerformer<Int> = store
+            return ProductStoreWitness(performer: performer)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineWhenCallsNameFailsForDirectStoreArgument() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            MustDeclare(.local(binding: LocalBindingConstraint(identifier: "performer", typePattern: .anyConformance("WitnessActionPerformer"), initializerIdentifier: "store")))
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    protocol WitnessActionPerformer<Action> {}
+    struct MemberStoreWitness {
+        init(performer: Any) {}
+    }
+    struct MemberStore {
+        func makeStoreWitness(store: Any) -> MemberStoreWitness {
+            let performer: any WitnessActionPerformer<Int> = store
+            return MemberStoreWitness(performer: store)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/MemberStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation for direct store passing")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 2)
+            #expect(violations[0].reason.contains("must use identifier"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineWhenCallsNameFailsWhenLocalBindingMissing() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            MustDeclare(.local(binding: LocalBindingConstraint(identifier: "performer", typePattern: .anyConformance("WitnessActionPerformer"), initializerIdentifier: "store")))
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(store: Any, performer: Any) -> ProductStoreWitness {
+            ProductStoreWitness(performer: performer)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation for missing local declaration")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("local declaration"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineWhenCallsNameAppliesToAllMatches() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            MustDeclare(.local(binding: LocalBindingConstraint(identifier: "performer", typePattern: .anyConformance("WitnessActionPerformer"), initializerIdentifier: "store")))
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    protocol WitnessActionPerformer<Action> {}
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(store: Any) {
+            let performer: any WitnessActionPerformer<Int> = store
+            _ = ProductStoreWitness(performer: performer)
+            _ = ProductStoreWitness(performer: store)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation because all matched creations must satisfy the rule")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 2)
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineRejectsWhenCallsNameRuleWithConflictingIdentifiers() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "performer")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected invalid rule body due to conflicting identifiers")
+    } catch let error as SwiftSyntaxRuleEvaluatorError {
+        switch error {
+        case .invalidRuleBody(_, let reason):
+            #expect(reason.contains("cannot reference the same identifier"))
+        default:
+            Issue.record("Unexpected evaluator error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustDeclareStandaloneRequiresBindingInEachFunction() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "required-performer-binding",
+            body: """
+            MustDeclare(.local(binding: LocalBindingConstraint(identifier: "performer", typePattern: .anyConformance("WitnessActionPerformer"), initializerIdentifier: "store")))
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    protocol WitnessActionPerformer<Action> {}
+    struct Store {
+        func makeA(store: Any) {
+            let performer: any WitnessActionPerformer<Int> = store
+        }
+        func makeB(store: Any) {
+            _ = store
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/Store.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation for missing local declaration in makeB")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("same function"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineAcceptsLegacyWhenCreatesSyntax() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCreates(typeNamePattern: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(store: Any, performer: Any) -> ProductStoreWitness {
+            ProductStoreWitness(performer: performer)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
     )
 
     try await engine.check()

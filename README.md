@@ -53,9 +53,7 @@ let policy = Rin.Policy {
     )
     Rules {
         Rule(id: "viewmodel_tracks_screen") {
-            MustCall(
-                RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
-            )
+            MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
         }
         .message("ViewModel entry flows must send screen analytics.")
         .severity(.error)
@@ -90,9 +88,7 @@ let policy = Rin.Policy {
     )
     Rules {
         Rule(id: "viewmodel_tracks_screen") {
-            MustCall(
-                RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
-            )
+            MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
         }
         .scope(
             include: ["**/*ViewModel.swift"],
@@ -122,9 +118,7 @@ Use `Rule.scope(include:exclude:)` to narrow a rule to specific files.
 
 ```swift
 Rule(id: "viewmodel_tracks_screen") {
-    MustCall(
-        RuleCallTarget(receiver: .symbol("Analytics"), method: "sendScreen")
-    )
+    MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
 }
 .scope(
     include: ["**/*ViewModel.swift"],
@@ -138,15 +132,13 @@ Rule(id: "viewmodel_tracks_screen") {
 
 ```swift
 Rule(id: "authorization_single") {
-    MustCall(
-        RuleCallTarget(receiver: .symbol("Authorizer"), method: "authorize")
-    )
+    MustCall(receiver: .symbol("Authorizer"), method: "authorize")
 }
 
 Rule(id: "authorization_any") {
     MustCallAnyOf([
-        RuleCallTarget(receiver: .symbol("Authorizer"), method: "authorize"),
-        RuleCallTarget(receiver: .symbol("Authorizer"), method: "can")
+        RuleCall(receiver: .symbol("Authorizer"), method: "authorize"),
+        RuleCall(receiver: .symbol("Authorizer"), method: "can")
     ])
 }
 ```
@@ -180,13 +172,9 @@ Examples:
 
 ```swift
 Rule(id: "transaction_pair") {
-    WhenCalls(
-        RuleCallTarget(receiver: .symbol("DB"), method: "beginTransaction"),
-        mustAlsoCall: [
-            RuleCallTarget(receiver: .symbol("DB"), method: "commit"),
-            RuleCallTarget(receiver: .symbol("DB"), method: "rollback")
-        ]
-    )
+    WhenCalls(receiver: .symbol("DB"), method: "beginTransaction")
+        .mustAlsoCall(receiver: .symbol("DB"), method: "commit")
+        .mustAlsoCall(receiver: .symbol("DB"), method: "rollback")
 }
 .message("Transactions must end with commit() or rollback().")
 .severity(.error)
