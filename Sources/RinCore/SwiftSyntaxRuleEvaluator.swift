@@ -46,6 +46,10 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         collector.walk(syntax)
         let calls = collector.calls
         let catchClauses = collector.catchClauses
+        let creations = collector.creations
+        let localDeclarations = collector.localDeclarations
+        let allFunctionIDs = collector.allFunctionIDs
+        let functionLocations = collector.functionLocations
 
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
@@ -54,6 +58,10 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                     rule,
                     calls: calls,
                     catchClauses: catchClauses,
+                    creations: creations,
+                    localDeclarations: localDeclarations,
+                    allFunctionIDs: allFunctionIDs,
+                    functionLocations: functionLocations,
                     filePath: file.path
                 )
             )
@@ -65,6 +73,10 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         _ rule: RinRule,
         calls: [CallSite],
         catchClauses: [CatchClauseSite],
+        creations: [TypeCreationSite],
+        localDeclarations: [LocalDeclarationSite],
+        allFunctionIDs: [Int],
+        functionLocations: [Int: (line: Int, column: Int)],
         filePath: String
     ) throws -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
@@ -186,6 +198,96 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
 
+        if parsedRuleBody.whenCallsNameChecks.isEmpty {
+            for declareCheck in parsedRuleBody.mustDeclareLocalChecks {
+                for functionID in allFunctionIDs {
+                    if matchesLocalDeclaration(declareCheck, declarations: localDeclarations, functionID: functionID) {
+                        continue
+                    }
+                    let location = functionLocations[functionID] ?? fallbackLocation
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: rule.id,
+                            reason: "Required local declaration `\(declareCheck.identifier)` was not found in the same function.",
+                            file: filePath,
+                            line: location.0,
+                            column: location.1
+                        )
+                    )
+                }
+            }
+        } else {
+            for nameCheck in parsedRuleBody.whenCallsNameChecks {
+                let matchedCreations = creations.filter { typeNameMatches($0.typeName, pattern: nameCheck.namePattern) }
+                guard !matchedCreations.isEmpty else { continue }
+
+                for creation in matchedCreations {
+                    guard let argument = creation.arguments.first(where: { $0.label == nameCheck.argumentLabel }) else {
+                        violations.append(
+                            RinSemanticViolation(
+                                ruleId: rule.id,
+                                reason: "When `\(nameCheck.namePattern.rendered)` is called, argument label `\(nameCheck.argumentLabel)` is required.",
+                                file: filePath,
+                                line: creation.line,
+                                column: creation.column
+                            )
+                        )
+                        continue
+                    }
+
+                    guard case .identifier(let identifier) = argument.value else {
+                        violations.append(
+                            RinSemanticViolation(
+                                ruleId: rule.id,
+                                reason: "Argument `\(nameCheck.argumentLabel)` must use identifier `\(nameCheck.mustUseIdentifier)` as a standalone identifier.",
+                                file: filePath,
+                                line: creation.line,
+                                column: creation.column
+                            )
+                        )
+                        continue
+                    }
+
+                    if identifier != nameCheck.mustUseIdentifier {
+                        violations.append(
+                            RinSemanticViolation(
+                                ruleId: rule.id,
+                                reason: "Argument `\(nameCheck.argumentLabel)` must use identifier `\(nameCheck.mustUseIdentifier)`.",
+                                file: filePath,
+                                line: creation.line,
+                                column: creation.column
+                            )
+                        )
+                    }
+                    if identifier == nameCheck.mustNotUseIdentifier {
+                        violations.append(
+                            RinSemanticViolation(
+                                ruleId: rule.id,
+                                reason: "Argument `\(nameCheck.argumentLabel)` must not use identifier `\(nameCheck.mustNotUseIdentifier)`.",
+                                file: filePath,
+                                line: creation.line,
+                                column: creation.column
+                            )
+                        )
+                    }
+
+                    for declareCheck in parsedRuleBody.mustDeclareLocalChecks {
+                        if !matchesLocalDeclaration(declareCheck, declarations: localDeclarations, functionID: creation.functionID) {
+                            violations.append(
+                                RinSemanticViolation(
+                                    ruleId: rule.id,
+                                    reason: "When `\(nameCheck.namePattern.rendered)` is called, local declaration `\(declareCheck.identifier)` is required in the same function.",
+                                    file: filePath,
+                                    line: creation.line,
+                                    column: creation.column
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         return violations
     }
 
@@ -208,13 +310,72 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             }
         }
     }
+
+    private func typeNameMatches(_ typeName: String, pattern: TypeNamePatternRule) -> Bool {
+        switch pattern {
+        case .exact(let value):
+            return typeName == value
+        case .prefix(let value):
+            return typeName.hasPrefix(value)
+        case .suffix(let value):
+            return typeName.hasSuffix(value)
+        }
+    }
+
+    private func matchesLocalDeclaration(
+        _ check: LocalBindingRule,
+        declarations: [LocalDeclarationSite],
+        functionID: Int?
+    ) -> Bool {
+        declarations.contains { declaration in
+            if let functionID, declaration.functionID != functionID {
+                return false
+            }
+            guard declaration.identifier == check.identifier else { return false }
+            guard declaration.isLet else { return false }
+            guard declaration.initializerIdentifier == check.initializerIdentifier else { return false }
+            return localTypeMatches(declaration.typeAnnotation, pattern: check.typePattern)
+        }
+    }
+
+    private func localTypeMatches(_ typeAnnotation: TypeSyntax?, pattern: LocalTypePatternRule) -> Bool {
+        guard let typeAnnotation else { return false }
+        switch pattern {
+        case .anyConformance(let protocolName):
+            guard let someOrAny = typeAnnotation.as(SomeOrAnyTypeSyntax.self),
+                  someOrAny.someOrAnySpecifier.text == "any"
+            else {
+                return false
+            }
+            return syntaxContainsIdentifierType(Syntax(someOrAny.constraint), name: protocolName)
+        }
+    }
+
+    private func syntaxContainsIdentifierType(_ syntax: Syntax, name: String) -> Bool {
+        if let identifierType = syntax.as(IdentifierTypeSyntax.self),
+           identifierType.name.text == name {
+            return true
+        }
+        for child in syntax.children(viewMode: .sourceAccurate) {
+            if syntaxContainsIdentifierType(child, name: name) {
+                return true
+            }
+        }
+        return false
+    }
 }
 
 private final class FunctionCallCollector: SyntaxVisitor {
     private let converter: SourceLocationConverter
     private var catchClauseStack: [Int] = []
+    private var functionStack: [Int] = []
+    private var nextFunctionID = 0
+    private(set) var allFunctionIDs: [Int] = []
+    private(set) var functionLocations: [Int: (line: Int, column: Int)] = [:]
     private(set) var calls: [CallSite] = []
     private(set) var catchClauses: [CatchClauseSite] = []
+    private(set) var creations: [TypeCreationSite] = []
+    private(set) var localDeclarations: [LocalDeclarationSite] = []
 
     init(converter: SourceLocationConverter, viewMode: SyntaxTreeViewMode) {
         self.converter = converter
@@ -232,6 +393,18 @@ private final class FunctionCallCollector: SyntaxVisitor {
                     column: location.column
                 )
             )
+            if let functionID = functionStack.last,
+               looksLikeTypeInitializer(name: declRef.baseName.text) {
+                creations.append(
+                    TypeCreationSite(
+                        typeName: declRef.baseName.text,
+                        arguments: parseArguments(node.arguments),
+                        functionID: functionID,
+                        line: location.line,
+                        column: location.column
+                    )
+                )
+            }
         } else if let memberAccess = node.calledExpression.as(MemberAccessExprSyntax.self) {
             calls.append(
                 CallSite(
@@ -243,6 +416,20 @@ private final class FunctionCallCollector: SyntaxVisitor {
             )
         }
         return .visitChildren
+    }
+
+    override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
+        let functionID = nextFunctionID
+        nextFunctionID += 1
+        allFunctionIDs.append(functionID)
+        let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
+        functionLocations[functionID] = (location.line, location.column)
+        functionStack.append(functionID)
+        return .visitChildren
+    }
+
+    override func visitPost(_ node: FunctionDeclSyntax) {
+        _ = functionStack.popLast()
     }
 
     override func visit(_ node: CatchClauseSyntax) -> SyntaxVisitorContinueKind {
@@ -271,6 +458,35 @@ private final class FunctionCallCollector: SyntaxVisitor {
 
     override func visit(_ node: GuardStmtSyntax) -> SyntaxVisitorContinueKind {
         collectCaseChecksIfNeeded(from: node.conditions, caseBody: nil)
+        return .visitChildren
+    }
+
+    override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
+        guard let functionID = functionStack.last else {
+            return .visitChildren
+        }
+        let isLet = node.bindingSpecifier.tokenKind == .keyword(.let)
+        let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
+        for binding in node.bindings {
+            guard let identifierPattern = binding.pattern.as(IdentifierPatternSyntax.self) else { continue }
+            let initializerIdentifier: String?
+            if let initializerExpression = binding.initializer?.value.as(DeclReferenceExprSyntax.self) {
+                initializerIdentifier = initializerExpression.baseName.text
+            } else {
+                initializerIdentifier = nil
+            }
+            localDeclarations.append(
+                LocalDeclarationSite(
+                    identifier: identifierPattern.identifier.text,
+                    typeAnnotation: binding.typeAnnotation?.type,
+                    initializerIdentifier: initializerIdentifier,
+                    isLet: isLet,
+                    functionID: functionID,
+                    line: location.line,
+                    column: location.column
+                )
+            )
+        }
         return .visitChildren
     }
 
@@ -338,6 +554,21 @@ private final class FunctionCallCollector: SyntaxVisitor {
             return .simpleName(declRef.baseName.text)
         }
         return .complex
+    }
+
+    private func parseArguments(_ arguments: LabeledExprListSyntax) -> [LabeledArgumentSite] {
+        arguments.map { argument in
+            let label = argument.label?.text ?? "_"
+            if let identifier = argument.expression.as(DeclReferenceExprSyntax.self) {
+                return LabeledArgumentSite(label: label, value: .identifier(identifier.baseName.text))
+            }
+            return LabeledArgumentSite(label: label, value: .other(argument.expression.trimmedDescription))
+        }
+    }
+
+    private func looksLikeTypeInitializer(name: String) -> Bool {
+        guard let first = name.first else { return false }
+        return first.isUppercase
     }
 
     private func updateCaseHandling(caseName: String, body: CodeBlockSyntax, catchIndex: Int) {
@@ -416,10 +647,18 @@ private enum RuleBodyParser {
             }
             let called = calledName(of: callExpr.calledExpression)
             if called == "MustCall" {
-                guard let firstArg = callExpr.arguments.first?.expression else {
+                if let receiverExpr = callExpr.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
+                   let methodExpr = callExpr.arguments.first(where: { $0.label?.text == "method" })?.expression {
+                    let receiver = try parseReceiverPattern(receiverExpr)
+                    guard let methodName = stringLiteralValue(methodExpr) else {
+                        throw RuleBodyParserError.invalidClause("MustCall method must be a string literal")
+                    }
+                    parsed.mustCallTargets.append(RuleCallPattern(receiver: receiver, methodName: methodName))
+                } else if let firstArg = callExpr.arguments.first?.expression {
+                    parsed.mustCallTargets.append(try parseRuleCallPattern(firstArg))
+                } else {
                     throw RuleBodyParserError.invalidClause("MustCall requires a target")
                 }
-                parsed.mustCallTargets.append(try parseRuleCallPattern(firstArg))
                 continue
             }
             if called == "MustCallAnyOf" {
@@ -450,36 +689,237 @@ private enum RuleBodyParser {
                 continue
             }
             if called == "mustAlsoCall" {
-                guard let baseCall = callExpr.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self),
-                      calledName(of: baseCall.calledExpression) == "WhenCalls",
-                      let triggerExpr = baseCall.arguments.first?.expression
-                else {
-                    throw RuleBodyParserError.invalidClause("WhenCalls(...).mustAlsoCall(...) requires a trigger")
-                }
-                guard let reqExpr = callExpr.arguments.first?.expression,
-                      let reqArray = reqExpr.as(ArrayExprSyntax.self)
-                else {
-                    throw RuleBodyParserError.invalidClause("mustAlsoCall requires requirements array")
-                }
-                let trigger = try parseRuleCallPattern(triggerExpr)
-                let requirements = try reqArray.elements.map { try parseRuleCallPattern($0.expression) }
+                let parsedWhenCalls = try parseWhenCallsChain(from: callExpr)
+                let trigger = parsedWhenCalls.trigger
+                let requirements = parsedWhenCalls.requirements
                 parsed.whenCallsConditions.append((trigger: trigger, requirements: requirements))
+                continue
             }
+            if called == "MustDeclare" {
+                guard let firstArg = callExpr.arguments.first?.expression else {
+                    throw RuleBodyParserError.invalidClause("MustDeclare requires declaration constraint")
+                }
+                parsed.mustDeclareLocalChecks.append(try parseMustDeclareLocal(firstArg))
+                continue
+            }
+            if called == "mustNotUse" || called == "mustUse" || called == "inArgument" || called == "WhenCreates" {
+                parsed.whenCallsNameChecks.append(try parseWhenCallsNameChain(from: callExpr))
+                continue
+            }
+            if called == "WhenCalls",
+               callExpr.arguments.contains(where: { $0.label?.text == "name" }) {
+                parsed.whenCallsNameChecks.append(try parseWhenCallsNameChain(from: callExpr))
+                continue
+            }
+            throw RuleBodyParserError.invalidClause(
+                "Unsupported top-level clause in rule body: \(called ?? "unknown")"
+            )
         }
         return parsed
     }
 
+    private static func parseMustDeclareLocal(_ expression: ExprSyntax) throws -> LocalBindingRule {
+        guard let localCall = expression.as(FunctionCallExprSyntax.self),
+              calledName(of: localCall.calledExpression) == "local",
+              let bindingExpr = localCall.arguments.first(where: { $0.label?.text == "binding" })?.expression
+        else {
+            throw RuleBodyParserError.invalidClause("MustDeclare requires .local(binding: ...)")
+        }
+        guard let bindingCall = bindingExpr.as(FunctionCallExprSyntax.self),
+              calledName(of: bindingCall.calledExpression) == "LocalBindingConstraint"
+        else {
+            throw RuleBodyParserError.invalidClause("local binding must use LocalBindingConstraint(...)")
+        }
+        guard let identifierExpr = bindingCall.arguments.first(where: { $0.label?.text == "identifier" })?.expression,
+              let identifier = stringLiteralValue(identifierExpr),
+              let initializerExpr = bindingCall.arguments.first(where: { $0.label?.text == "initializerIdentifier" })?.expression,
+              let initializerIdentifier = stringLiteralValue(initializerExpr),
+              let typeExpr = bindingCall.arguments.first(where: { $0.label?.text == "typePattern" })?.expression
+        else {
+            throw RuleBodyParserError.invalidClause("LocalBindingConstraint requires identifier/typePattern/initializerIdentifier")
+        }
+        let typePattern = try parseLocalTypePattern(typeExpr)
+        return LocalBindingRule(
+            identifier: identifier,
+            typePattern: typePattern,
+            initializerIdentifier: initializerIdentifier
+        )
+    }
+
+    private static func parseLocalTypePattern(_ expression: ExprSyntax) throws -> LocalTypePatternRule {
+        guard let callExpr = expression.as(FunctionCallExprSyntax.self),
+              calledName(of: callExpr.calledExpression) == "anyConformance",
+              let firstArg = callExpr.arguments.first?.expression,
+              let protocolName = stringLiteralValue(firstArg)
+        else {
+            throw RuleBodyParserError.invalidClause("typePattern must be .anyConformance(\"...\")")
+        }
+        return .anyConformance(protocolName)
+    }
+
+    private static func parseWhenCallsNameChain(from expression: FunctionCallExprSyntax) throws -> WhenCallsNameRule {
+        var current: FunctionCallExprSyntax? = expression
+        var namePattern: TypeNamePatternRule?
+        var argumentLabel: String?
+        var mustUseIdentifier: String?
+        var mustNotUseIdentifier: String?
+
+        while let call = current {
+            let called = calledName(of: call.calledExpression)
+            switch called {
+            case "mustNotUse":
+                guard let identifierExpr = call.arguments.first(where: { $0.label?.text == "identifier" })?.expression,
+                      let identifier = stringLiteralValue(identifierExpr)
+                else {
+                    throw RuleBodyParserError.invalidClause("mustNotUse requires identifier string literal")
+                }
+                mustNotUseIdentifier = identifier
+                current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
+            case "mustUse":
+                guard let identifierExpr = call.arguments.first(where: { $0.label?.text == "identifier" })?.expression,
+                      let identifier = stringLiteralValue(identifierExpr)
+                else {
+                    throw RuleBodyParserError.invalidClause("mustUse requires identifier string literal")
+                }
+                mustUseIdentifier = identifier
+                current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
+            case "inArgument":
+                guard let labelExpr = call.arguments.first(where: { $0.label?.text == "argumentLabel" })?.expression,
+                      let label = stringLiteralValue(labelExpr)
+                else {
+                    throw RuleBodyParserError.invalidClause("inArgument requires argumentLabel string literal")
+                }
+                argumentLabel = label
+                current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
+            case "WhenCalls":
+                if let nameExpr = call.arguments.first(where: { $0.label?.text == "name" })?.expression {
+                    namePattern = try parseTypeNamePattern(nameExpr)
+                    current = nil
+                } else {
+                    throw RuleBodyParserError.invalidClause("WhenCalls(name:) requires name pattern")
+                }
+            case "WhenCreates":
+                guard let patternExpr = call.arguments.first(where: { $0.label?.text == "typeNamePattern" })?.expression
+                else {
+                    throw RuleBodyParserError.invalidClause("WhenCreates requires typeNamePattern")
+                }
+                namePattern = try parseTypeNamePattern(patternExpr)
+                current = nil
+            default:
+                throw RuleBodyParserError.invalidClause("Unsupported WhenCalls(name:) clause: \(called ?? "unknown")")
+            }
+        }
+
+        guard let namePattern,
+              let argumentLabel,
+              let mustUseIdentifier,
+              let mustNotUseIdentifier
+        else {
+            throw RuleBodyParserError.invalidClause(
+                "WhenCalls(name:) chain requires name, inArgument(argumentLabel:), mustUse(identifier:), and mustNotUse(identifier:)"
+            )
+        }
+        if mustUseIdentifier == mustNotUseIdentifier {
+            throw RuleBodyParserError.invalidClause("mustUse and mustNotUse cannot reference the same identifier")
+        }
+        return WhenCallsNameRule(
+            namePattern: namePattern,
+            argumentLabel: argumentLabel,
+            mustUseIdentifier: mustUseIdentifier,
+            mustNotUseIdentifier: mustNotUseIdentifier
+        )
+    }
+
+    private static func parseTypeNamePattern(_ expression: ExprSyntax) throws -> TypeNamePatternRule {
+        guard let patternCall = expression.as(FunctionCallExprSyntax.self),
+              let called = calledName(of: patternCall.calledExpression),
+              let firstArg = patternCall.arguments.first?.expression,
+              let value = stringLiteralValue(firstArg)
+        else {
+            throw RuleBodyParserError.invalidClause("typeNamePattern must be .exact/.prefix/.suffix with string literal")
+        }
+        switch called {
+        case "exact":
+            return .exact(value)
+        case "prefix":
+            return .prefix(value)
+        case "suffix":
+            return .suffix(value)
+        default:
+            throw RuleBodyParserError.invalidClause("Unsupported typeNamePattern: \(called)")
+        }
+    }
+
+    private static func parseWhenCallsChain(
+        from expression: FunctionCallExprSyntax
+    ) throws -> (trigger: RuleCallPattern, requirements: [RuleCallPattern]) {
+        var current: FunctionCallExprSyntax? = expression
+        var trigger: RuleCallPattern?
+        var requirements: [RuleCallPattern] = []
+
+        while let call = current {
+            let called = calledName(of: call.calledExpression)
+            switch called {
+            case "mustAlsoCall":
+                if let receiverExpr = call.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
+                   let methodExpr = call.arguments.first(where: { $0.label?.text == "method" })?.expression {
+                    let receiver = try parseReceiverPattern(receiverExpr)
+                    guard let methodName = stringLiteralValue(methodExpr) else {
+                        throw RuleBodyParserError.invalidClause("mustAlsoCall method must be string literal")
+                    }
+                    requirements.insert(
+                        RuleCallPattern(receiver: receiver, methodName: methodName),
+                        at: 0
+                    )
+                } else if let reqExpr = call.arguments.first?.expression,
+                          let reqArray = reqExpr.as(ArrayExprSyntax.self) {
+                    let parsed = try reqArray.elements.map { try parseRuleCallPattern($0.expression) }
+                    requirements.insert(contentsOf: parsed, at: 0)
+                } else {
+                    throw RuleBodyParserError.invalidClause(
+                        "mustAlsoCall requires either receiver/method or requirements array"
+                    )
+                }
+                current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
+            case "WhenCalls":
+                if let receiverExpr = call.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
+                   let methodExpr = call.arguments.first(where: { $0.label?.text == "method" })?.expression {
+                    let receiver = try parseReceiverPattern(receiverExpr)
+                    guard let methodName = stringLiteralValue(methodExpr) else {
+                        throw RuleBodyParserError.invalidClause("WhenCalls method must be string literal")
+                    }
+                    trigger = RuleCallPattern(receiver: receiver, methodName: methodName)
+                } else if let triggerExpr = call.arguments.first?.expression {
+                    trigger = try parseRuleCallPattern(triggerExpr)
+                } else {
+                    throw RuleBodyParserError.invalidClause(
+                        "WhenCalls(...).mustAlsoCall(...) requires a trigger"
+                    )
+                }
+                current = nil
+            default:
+                throw RuleBodyParserError.invalidClause("Unsupported WhenCalls chain clause: \(called ?? "unknown")")
+            }
+        }
+
+        guard let trigger else {
+            throw RuleBodyParserError.invalidClause("WhenCalls(...).mustAlsoCall(...) requires a trigger")
+        }
+        guard !requirements.isEmpty else {
+            throw RuleBodyParserError.invalidClause("mustAlsoCall requires at least one requirement")
+        }
+        return (trigger, requirements)
+    }
+
     private static func parseRuleCallPattern(_ expression: ExprSyntax) throws -> RuleCallPattern {
         if let callExpr = expression.as(FunctionCallExprSyntax.self),
-           calledName(of: callExpr.calledExpression) == "RuleCallTarget" {
-            guard let receiverArg = callExpr.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
-                  let methodArg = callExpr.arguments.first(where: { $0.label?.text == "method" })?.expression
-            else {
-                throw RuleBodyParserError.invalidClause("RuleCallTarget(receiver: ..., method: ...) is required")
-            }
+           let called = calledName(of: callExpr.calledExpression),
+           called == "RuleCallTarget" || called == "RuleCall",
+           let receiverArg = callExpr.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
+           let methodArg = callExpr.arguments.first(where: { $0.label?.text == "method" })?.expression {
             let receiver = try parseReceiverPattern(receiverArg)
             guard let methodName = stringLiteralValue(methodArg) else {
-                throw RuleBodyParserError.invalidClause("RuleCallTarget method must be a string literal")
+                throw RuleBodyParserError.invalidClause("call target method must be a string literal")
             }
             return RuleCallPattern(receiver: receiver, methodName: methodName)
         }
@@ -585,6 +1025,15 @@ private struct ParsedRuleBody {
     var mustCallAnyOfGroups: [[RuleCallPattern]] = []
     var whenCallsConditions: [(trigger: RuleCallPattern, requirements: [RuleCallPattern])] = []
     var mustHandleErrorChecks: [ErrorHandlingCheck] = []
+    var mustDeclareLocalChecks: [LocalBindingRule] = []
+    var whenCallsNameChecks: [WhenCallsNameRule] = []
+}
+
+private struct WhenCallsNameRule {
+    let namePattern: TypeNamePatternRule
+    let argumentLabel: String
+    let mustUseIdentifier: String
+    let mustNotUseIdentifier: String
 }
 
 private struct CallSite {
@@ -646,5 +1095,60 @@ private enum RuleReceiverPattern {
     case symbol(String)
     case none
     case any
+}
+
+private enum TypeNamePatternRule {
+    case exact(String)
+    case prefix(String)
+    case suffix(String)
+
+    var rendered: String {
+        switch self {
+        case .exact(let value):
+            return "exact(\(value))"
+        case .prefix(let value):
+            return "prefix(\(value))"
+        case .suffix(let value):
+            return "suffix(\(value))"
+        }
+    }
+}
+
+private enum LocalTypePatternRule {
+    case anyConformance(String)
+}
+
+private struct LocalBindingRule {
+    let identifier: String
+    let typePattern: LocalTypePatternRule
+    let initializerIdentifier: String
+}
+
+private struct LabeledArgumentSite {
+    let label: String
+    let value: ArgumentValueSite
+}
+
+private enum ArgumentValueSite {
+    case identifier(String)
+    case other(String)
+}
+
+private struct TypeCreationSite {
+    let typeName: String
+    let arguments: [LabeledArgumentSite]
+    let functionID: Int
+    let line: Int
+    let column: Int
+}
+
+private struct LocalDeclarationSite {
+    let identifier: String
+    let typeAnnotation: TypeSyntax?
+    let initializerIdentifier: String?
+    let isLet: Bool
+    let functionID: Int
+    let line: Int
+    let column: Int
 }
 
