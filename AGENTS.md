@@ -20,9 +20,6 @@
   - 推論結果が分からないと型条件を判定できない
 - 新ルール追加時は「型解決なしで判定可能か」を先に確認し、不可なら DSL 拡張ではなく設計見直しで扱う。
 
-## テスト
-- DSL デコードまたは evaluator 意味論を変更したら、両方の観点のテストを更新する。
-
 ## 境界
 - Fail-closed を維持する。不確実な解析/評価は成功扱いにしない。
 - 警告のみで `0` 終了するフォールバックは禁止。
@@ -31,6 +28,11 @@
   - `1`: policy violations
   - `2`: runtime/config/parser errors
 - AST で構造的に実装できないルールは導入しない。
+
+## ドキュメント
+- 正本: `README.md`（利用例）、`skills/rin-dsl-rule-extraction/SKILL.md`（ルール抽出）、`Sources/RinCore/RinterConfigDSL.swift`（DSL API）。
+- skill 配布: `npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y`（invoke: `/rin-dsl-rule-extraction`）。
+- DSL デコードまたは evaluator 意味論を変えたら、デコード/evaluator **両方のテスト**と **README の例**・**SKILL.md** を同期する。
 
 ## GIT
 - 変更は最小・意図保存で行い、大きな無関係リファクタは避ける。
