@@ -28,7 +28,7 @@ Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENT
 
 | Predicate | Unit | Default `onPath` |
 |-----------|------|------------------|
-| `MustCall` / `MustCallAnyOf` / `MustDeclare` | Each `FunctionDecl` | `everyFunction(ifEmpty: .violate)` |
+| `MustCall` / `MustCallAnyOf` / `MustDeclare` / `MustThrow` | Each `FunctionDecl` | `everyFunction(ifEmpty: .violate)` |
 | `MustHandleError` | Each `catch` | `everyCatch(ifEmpty: .violate)` |
 | `WhenCalls` + follow-ups | Each trigger | `sameFunction` |
 | `WhenCalls(name:)` | Each matching creation | creation's function |
@@ -70,8 +70,9 @@ Task Progress:
 
 | Pattern | `Rule.scope` | `onPath` / shape |
 |---------|--------------|------------------|
-| `load()` must call analytics | files containing the type | `.namedFunctions("load", ifEmpty: .skip)` |
+| `load()` must call analytics | files containing the type | `UnitPathScope.namedFunctions("load", ifEmpty: .skip)` |
 | Transaction close | DB-related files | `mustAlsoCallAnyOf([commit, rollback])` |
+| Typed throws | API layer files | `MustThrow(type: "AppError", onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip))` |
 | Cross-function cleanup | relevant files | `onPath: .entireFile` on `WhenCalls` |
 
 ### `MustDeclare` + `WhenCalls(name:)`
@@ -81,7 +82,7 @@ MustDeclare(.local(binding: LocalBindingConstraint(
     identifier: "performer",
     typePattern: .anyConformance("ActionPerformer"),
     initializerIdentifier: "store"
-)), onPath: .namedFunctions("makeWitness", ifEmpty: .skip))
+)), onPath: UnitPathScope.namedFunctions("makeWitness", ifEmpty: .skip))
 WhenCalls(name: .suffix("Witness"))
     .inArgument(argumentLabel: "performer")
     .mustUse(identifier: "performer")
@@ -110,6 +111,7 @@ Survey the project and extract **project-specific** rule candidates verifiable b
 - `WhenCalls(...).mustAlsoCallAnyOf([...])` — OR
 - `MustHandleError(target:, as:, onPath:, whenUnmentioned:)` — per catch
 - `MustDeclare(..., onPath:)` — per function
+- `MustThrow(type:, onPath:)` — per function; **literal** typed-throws type name only (e.g. `throws(AppError)`)
 - `WhenCalls(name:).inArgument(...).mustUse(...).mustNotUse(...)` — per matching creation
 - `Target` / `Rule.scope` — **file** globs only
 
@@ -132,7 +134,7 @@ Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over bare `e
 
 `project_summary`, `applicable_rules` (with `verification_sample` OK/NG), `needs_code_convention_change`, `out_of_scope`, `draft_rinfile`, `rinter_validation`.
 
-**Not supported (`out_of_scope`):** import rules, access control, SwiftUI-specific, cross-file resolution, type inference / `typealias`, call order / 1:1 pairing, helper delegation.
+**Not supported (`out_of_scope`):** import rules, access control, SwiftUI-specific, cross-file resolution, type inference / `typealias`, untyped `throws`, `throws(any Error)`, return/parameter type signatures, call order / 1:1 pairing, helper delegation.
 
 ## Self-check
 
