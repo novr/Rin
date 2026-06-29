@@ -50,6 +50,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         let localDeclarations = collector.localDeclarations
         let allFunctionIDs = collector.allFunctionIDs
         let functionLocations = collector.functionLocations
+        let functionNames = collector.functionNames
 
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
@@ -62,11 +63,47 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                     localDeclarations: localDeclarations,
                     allFunctionIDs: allFunctionIDs,
                     functionLocations: functionLocations,
+                    functionNames: functionNames,
                     filePath: file.path
                 )
             )
         }
         return violations
+    }
+
+    static func collectCallSites(source: String, filePath: String = "Test.swift") throws -> [CollectedCallSite] {
+        let syntax = Parser.parse(source: source)
+        guard !syntax.hasError else {
+            throw SwiftSyntaxRuleEvaluatorError.invalidSwiftFile(path: filePath, diagnostics: [])
+        }
+        let converter = SourceLocationConverter(fileName: filePath, tree: syntax)
+        let collector = FunctionCallCollector(converter: converter, viewMode: .sourceAccurate)
+        collector.walk(syntax)
+        return collector.calls.map { call in
+            CollectedCallSite(
+                receiver: call.receiver.collectedDescription,
+                method: call.method,
+                functionName: call.functionName
+            )
+        }
+    }
+
+    static func collectCatchClauses(source: String, filePath: String = "Test.swift") throws -> [CollectedCatchClause] {
+        let syntax = Parser.parse(source: source)
+        guard !syntax.hasError else {
+            throw SwiftSyntaxRuleEvaluatorError.invalidSwiftFile(path: filePath, diagnostics: [])
+        }
+        let converter = SourceLocationConverter(fileName: filePath, tree: syntax)
+        let collector = FunctionCallCollector(converter: converter, viewMode: .sourceAccurate)
+        collector.walk(syntax)
+        return collector.catchClauses.map { catchClause in
+            CollectedCatchClause(
+                line: catchClause.line,
+                column: catchClause.column,
+                functionName: catchClause.functionName,
+                handledCases: catchClause.handledCases.sorted()
+            )
+        }
     }
 
     private func evaluateRule(
@@ -77,10 +114,11 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         localDeclarations: [LocalDeclarationSite],
         allFunctionIDs: [Int],
         functionLocations: [Int: (line: Int, column: Int)],
+        functionNames: [Int: String],
         filePath: String
     ) throws -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
-        let fallbackLocation = calls.first.map { ($0.line, $0.column) }
+        let fileAnchor = calls.first.map { ($0.line, $0.column) }
             ?? catchClauses.first.map { ($0.line, $0.column) }
             ?? (1, 1)
         let parsedRuleBody: ParsedRuleBody
@@ -90,131 +128,78 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
             throw SwiftSyntaxRuleEvaluatorError.invalidRuleBody(ruleID: rule.id, reason: parserError.localizedDescription)
         }
 
-        for requiredCall in parsedRuleBody.mustCallTargets {
-            if !matches(requiredCall, in: calls) {
-                violations.append(
-                    RinSemanticViolation(
-                        ruleId: rule.id,
-                        reason: "Required call `\(requiredCall.rendered)` was not found.",
-                        file: filePath,
-                        line: fallbackLocation.0,
-                        column: fallbackLocation.1
-                    )
+        for mustCall in parsedRuleBody.mustCallRules {
+            violations.append(
+                contentsOf: evaluateMustCall(
+                    ruleID: rule.id,
+                    pattern: mustCall.pattern,
+                    onPath: mustCall.onPath,
+                    calls: calls,
+                    allFunctionIDs: allFunctionIDs,
+                    functionLocations: functionLocations,
+                    functionNames: functionNames,
+                    filePath: filePath,
+                    fileAnchor: fileAnchor
                 )
-            }
+            )
         }
 
-        for anyGroup in parsedRuleBody.mustCallAnyOfGroups {
-            if anyGroup.allSatisfy({ !matches($0, in: calls) }) {
-                violations.append(
-                    RinSemanticViolation(
-                        ruleId: rule.id,
-                        reason: "At least one required call was not found: \(anyGroup.map(\.rendered).joined(separator: ", ")).",
-                        file: filePath,
-                        line: fallbackLocation.0,
-                        column: fallbackLocation.1
-                    )
+        for mustCallAnyOf in parsedRuleBody.mustCallAnyOfRules {
+            violations.append(
+                contentsOf: evaluateMustCallAnyOf(
+                    ruleID: rule.id,
+                    patterns: mustCallAnyOf.patterns,
+                    onPath: mustCallAnyOf.onPath,
+                    calls: calls,
+                    allFunctionIDs: allFunctionIDs,
+                    functionLocations: functionLocations,
+                    functionNames: functionNames,
+                    filePath: filePath,
+                    fileAnchor: fileAnchor
                 )
-            }
+            )
         }
 
         for conditional in parsedRuleBody.whenCallsConditions {
-            guard let triggerCall = firstMatch(conditional.trigger, in: calls) else { continue }
-            let missing = conditional.requirements.filter { !matches($0, in: calls) }
-            if !missing.isEmpty {
-                violations.append(
-                    RinSemanticViolation(
-                        ruleId: rule.id,
-                        reason: "When `\(conditional.trigger.rendered)` is called, required calls are missing: \(missing.map(\.rendered).joined(separator: ", ")).",
-                        file: filePath,
-                        line: triggerCall.line,
-                        column: triggerCall.column
-                    )
+            violations.append(
+                contentsOf: evaluateWhenCalls(
+                    ruleID: rule.id,
+                    condition: conditional,
+                    calls: calls,
+                    filePath: filePath
                 )
-            }
+            )
         }
 
-        for errorCheck in parsedRuleBody.mustHandleErrorChecks {
-            // If a file has no catch clause, skip this rule.
-            guard !catchClauses.isEmpty else { continue }
-            switch errorCheck.handling {
-            case .through:
-                if !catchClauses.contains(where: { $0.ignoredCases.contains(errorCheck.targetCase) }) {
-                    violations.append(
-                        RinSemanticViolation(
-                            ruleId: rule.id,
-                            reason: "Required through catch handling `case .\(errorCheck.targetCase)` was not found.",
-                            file: filePath,
-                            line: fallbackLocation.0,
-                            column: fallbackLocation.1
-                        )
-                    )
-                }
-            case .assign(let target):
-                if !catchClauses.contains(where: {
-                    $0.handledCases.contains(errorCheck.targetCase) &&
-                        ($0.caseHandling[errorCheck.targetCase]?.assignedTargets.contains(target) ?? false)
-                }) {
-                    violations.append(
-                        RinSemanticViolation(
-                            ruleId: rule.id,
-                            reason: "Required assignment handling for `case .\(errorCheck.targetCase)` to `\(target)` was not found.",
-                            file: filePath,
-                            line: fallbackLocation.0,
-                            column: fallbackLocation.1
-                        )
-                    )
-                }
-            case .transform(let functionName):
-                if !catchClauses.contains(where: {
-                    $0.handledCases.contains(errorCheck.targetCase) &&
-                        ($0.caseHandling[errorCheck.targetCase]?.calledFunctions.contains(functionName) ?? false)
-                }) {
-                    violations.append(
-                        RinSemanticViolation(
-                            ruleId: rule.id,
-                            reason: "Required transform handling for `case .\(errorCheck.targetCase)` using `\(functionName)` was not found.",
-                            file: filePath,
-                            line: fallbackLocation.0,
-                            column: fallbackLocation.1
-                        )
-                    )
-                }
-            case .rethrow:
-                if !catchClauses.contains(where: {
-                    $0.handledCases.contains(errorCheck.targetCase) &&
-                        ($0.caseHandling[errorCheck.targetCase]?.hasThrow ?? false)
-                }) {
-                    violations.append(
-                        RinSemanticViolation(
-                            ruleId: rule.id,
-                            reason: "Required rethrow handling for `case .\(errorCheck.targetCase)` was not found.",
-                            file: filePath,
-                            line: fallbackLocation.0,
-                            column: fallbackLocation.1
-                        )
-                    )
-                }
-            }
+        for errorCheck in parsedRuleBody.mustHandleErrorRules {
+            violations.append(
+                contentsOf: evaluateMustHandleError(
+                    ruleID: rule.id,
+                    check: errorCheck,
+                    catchClauses: catchClauses,
+                    allFunctionIDs: allFunctionIDs,
+                    functionNames: functionNames,
+                    filePath: filePath,
+                    fileAnchor: fileAnchor
+                )
+            )
         }
 
         if parsedRuleBody.whenCallsNameChecks.isEmpty {
-            for declareCheck in parsedRuleBody.mustDeclareLocalChecks {
-                for functionID in allFunctionIDs {
-                    if matchesLocalDeclaration(declareCheck, declarations: localDeclarations, functionID: functionID) {
-                        continue
-                    }
-                    let location = functionLocations[functionID] ?? fallbackLocation
-                    violations.append(
-                        RinSemanticViolation(
-                            ruleId: rule.id,
-                            reason: "Required local declaration `\(declareCheck.identifier)` was not found in the same function.",
-                            file: filePath,
-                            line: location.0,
-                            column: location.1
-                        )
+            for declareCheck in parsedRuleBody.mustDeclareRules {
+                violations.append(
+                    contentsOf: evaluateMustDeclare(
+                        ruleID: rule.id,
+                        declareCheck: declareCheck.binding,
+                        onPath: declareCheck.onPath,
+                        localDeclarations: localDeclarations,
+                        allFunctionIDs: allFunctionIDs,
+                        functionLocations: functionLocations,
+                        functionNames: functionNames,
+                        filePath: filePath,
+                        fileAnchor: fileAnchor
                     )
-                }
+                )
             }
         } else {
             for nameCheck in parsedRuleBody.whenCallsNameChecks {
@@ -271,12 +256,12 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                         )
                     }
 
-                    for declareCheck in parsedRuleBody.mustDeclareLocalChecks {
-                        if !matchesLocalDeclaration(declareCheck, declarations: localDeclarations, functionID: creation.functionID) {
+                    for declareCheck in parsedRuleBody.mustDeclareRules {
+                        if !matchesLocalDeclaration(declareCheck.binding, declarations: localDeclarations, functionID: creation.functionID) {
                             violations.append(
                                 RinSemanticViolation(
                                     ruleId: rule.id,
-                                    reason: "When `\(nameCheck.namePattern.rendered)` is called, local declaration `\(declareCheck.identifier)` is required in the same function.",
+                                    reason: "When `\(nameCheck.namePattern.rendered)` is called, local declaration `\(declareCheck.binding.identifier)` is required in the same function.",
                                     file: filePath,
                                     line: creation.line,
                                     column: creation.column
@@ -289,6 +274,333 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         }
 
         return violations
+    }
+
+    private func evaluateMustCall(
+        ruleID: String,
+        pattern: RuleCallPattern,
+        onPath: UnitPathScopeRule,
+        calls: [CallSite],
+        allFunctionIDs: [Int],
+        functionLocations: [Int: (line: Int, column: Int)],
+        functionNames: [Int: String],
+        filePath: String,
+        fileAnchor: (Int, Int)
+    ) -> [RinSemanticViolation] {
+        let targetFunctionIDs = resolveFunctionUnitIDs(onPath: onPath, allFunctionIDs: allFunctionIDs, functionNames: functionNames)
+        if let violation = emptyUnitViolation(
+            ruleID: ruleID,
+            unitsEmpty: targetFunctionIDs.isEmpty,
+            ifEmpty: onPath.ifEmpty,
+            filePath: filePath,
+            fileAnchor: fileAnchor
+        ) {
+            return [violation]
+        }
+        var violations: [RinSemanticViolation] = []
+        for functionID in targetFunctionIDs {
+            let scopedCalls = calls.filter { $0.functionID == functionID }
+            if !matches(pattern, in: scopedCalls) {
+                let location = functionLocations[functionID] ?? fileAnchor
+                violations.append(
+                    RinSemanticViolation(
+                        ruleId: ruleID,
+                        reason: "Required call `\(pattern.rendered)` was not found.",
+                        file: filePath,
+                        line: location.0,
+                        column: location.1
+                    )
+                )
+            }
+        }
+        return violations
+    }
+
+    private func evaluateMustCallAnyOf(
+        ruleID: String,
+        patterns: [RuleCallPattern],
+        onPath: UnitPathScopeRule,
+        calls: [CallSite],
+        allFunctionIDs: [Int],
+        functionLocations: [Int: (line: Int, column: Int)],
+        functionNames: [Int: String],
+        filePath: String,
+        fileAnchor: (Int, Int)
+    ) -> [RinSemanticViolation] {
+        let targetFunctionIDs = resolveFunctionUnitIDs(onPath: onPath, allFunctionIDs: allFunctionIDs, functionNames: functionNames)
+        if let violation = emptyUnitViolation(
+            ruleID: ruleID,
+            unitsEmpty: targetFunctionIDs.isEmpty,
+            ifEmpty: onPath.ifEmpty,
+            filePath: filePath,
+            fileAnchor: fileAnchor
+        ) {
+            return [violation]
+        }
+        var violations: [RinSemanticViolation] = []
+        for functionID in targetFunctionIDs {
+            let scopedCalls = calls.filter { $0.functionID == functionID }
+            if patterns.allSatisfy({ !matches($0, in: scopedCalls) }) {
+                let location = functionLocations[functionID] ?? fileAnchor
+                violations.append(
+                    RinSemanticViolation(
+                        ruleId: ruleID,
+                        reason: "At least one required call was not found: \(patterns.map(\.rendered).joined(separator: ", ")).",
+                        file: filePath,
+                        line: location.0,
+                        column: location.1
+                    )
+                )
+            }
+        }
+        return violations
+    }
+
+    private func evaluateWhenCalls(
+        ruleID: String,
+        condition: WhenCallsCondition,
+        calls: [CallSite],
+        filePath: String
+    ) -> [RinSemanticViolation] {
+        let triggers = calls.filter { matches(condition.trigger, in: [$0]) }
+        guard !triggers.isEmpty else { return [] }
+
+        var violations: [RinSemanticViolation] = []
+        for trigger in triggers {
+            let scopedCalls = followUpCalls(for: trigger, scope: condition.followUpScope, allCalls: calls)
+            let missingAnd = condition.andRequirements.filter { !matches($0, in: scopedCalls) }
+            let missingOrGroups = condition.orRequirementGroups.filter { group in
+                group.allSatisfy { !matches($0, in: scopedCalls) }
+            }
+            if missingAnd.isEmpty && missingOrGroups.isEmpty {
+                continue
+            }
+            var reasons: [String] = []
+            if !missingAnd.isEmpty {
+                reasons.append("missing AND calls: \(missingAnd.map(\.rendered).joined(separator: ", "))")
+            }
+            for group in missingOrGroups {
+                reasons.append("missing OR group: \(group.map(\.rendered).joined(separator: ", "))")
+            }
+            violations.append(
+                RinSemanticViolation(
+                    ruleId: ruleID,
+                    reason: "When `\(condition.trigger.rendered)` is called, required calls are missing (\(reasons.joined(separator: "; "))).",
+                    file: filePath,
+                    line: trigger.line,
+                    column: trigger.column
+                )
+            )
+        }
+        return violations
+    }
+
+    private func evaluateMustHandleError(
+        ruleID: String,
+        check: MustHandleErrorRule,
+        catchClauses: [CatchClauseSite],
+        allFunctionIDs: [Int],
+        functionNames: [Int: String],
+        filePath: String,
+        fileAnchor: (Int, Int)
+    ) -> [RinSemanticViolation] {
+        let targetIndices = resolveCatchUnitIndices(
+            onPath: check.onPath,
+            catchClauses: catchClauses,
+            allFunctionIDs: allFunctionIDs,
+            functionNames: functionNames
+        )
+        if let violation = emptyUnitViolation(
+            ruleID: ruleID,
+            unitsEmpty: targetIndices.isEmpty,
+            ifEmpty: check.onPath.ifEmpty,
+            filePath: filePath,
+            fileAnchor: fileAnchor,
+            reasonPrefix: "Required catch clause"
+        ) {
+            return [violation]
+        }
+
+        var violations: [RinSemanticViolation] = []
+        for index in targetIndices {
+            let catchClause = catchClauses[index]
+            let mentions = catchClause.handledCases.contains(check.targetCase)
+            if !mentions {
+                if check.whenUnmentioned == .violate {
+                    violations.append(
+                        RinSemanticViolation(
+                            ruleId: ruleID,
+                            reason: "Required catch handling for `case .\(check.targetCase)` was not found.",
+                            file: filePath,
+                            line: catchClause.line,
+                            column: catchClause.column
+                        )
+                    )
+                }
+                continue
+            }
+            if !satisfiesErrorHandling(catchClause: catchClause, check: check) {
+                violations.append(
+                    RinSemanticViolation(
+                        ruleId: ruleID,
+                        reason: mustHandleErrorReason(for: check),
+                        file: filePath,
+                        line: catchClause.line,
+                        column: catchClause.column
+                    )
+                )
+            }
+        }
+        return violations
+    }
+
+    private func evaluateMustDeclare(
+        ruleID: String,
+        declareCheck: LocalBindingRule,
+        onPath: UnitPathScopeRule,
+        localDeclarations: [LocalDeclarationSite],
+        allFunctionIDs: [Int],
+        functionLocations: [Int: (line: Int, column: Int)],
+        functionNames: [Int: String],
+        filePath: String,
+        fileAnchor: (Int, Int)
+    ) -> [RinSemanticViolation] {
+        let targetFunctionIDs = resolveFunctionUnitIDs(onPath: onPath, allFunctionIDs: allFunctionIDs, functionNames: functionNames)
+        if let violation = emptyUnitViolation(
+            ruleID: ruleID,
+            unitsEmpty: targetFunctionIDs.isEmpty,
+            ifEmpty: onPath.ifEmpty,
+            filePath: filePath,
+            fileAnchor: fileAnchor
+        ) {
+            return [violation]
+        }
+        var violations: [RinSemanticViolation] = []
+        for functionID in targetFunctionIDs {
+            if matchesLocalDeclaration(declareCheck, declarations: localDeclarations, functionID: functionID) {
+                continue
+            }
+            let location = functionLocations[functionID] ?? fileAnchor
+            violations.append(
+                RinSemanticViolation(
+                    ruleId: ruleID,
+                    reason: "Required local declaration `\(declareCheck.identifier)` was not found in the same function.",
+                    file: filePath,
+                    line: location.0,
+                    column: location.1
+                )
+            )
+        }
+        return violations
+    }
+
+    private func emptyUnitViolation(
+        ruleID: String,
+        unitsEmpty: Bool,
+        ifEmpty: EmptyUnitPolicyRule,
+        filePath: String,
+        fileAnchor: (Int, Int),
+        reasonPrefix: String = "Required evaluation unit"
+    ) -> RinSemanticViolation? {
+        guard unitsEmpty else { return nil }
+        switch ifEmpty {
+        case .skip:
+            return nil
+        case .violate:
+            return RinSemanticViolation(
+                ruleId: ruleID,
+                reason: "\(reasonPrefix) was not found for the declared onPath scope.",
+                file: filePath,
+                line: fileAnchor.0,
+                column: fileAnchor.1
+            )
+        }
+    }
+
+    private func resolveFunctionUnitIDs(
+        onPath: UnitPathScopeRule,
+        allFunctionIDs: [Int],
+        functionNames: [Int: String]
+    ) -> [Int] {
+        switch onPath.kind {
+        case .everyFunction:
+            return allFunctionIDs
+        case .namedFunctions(let name):
+            return allFunctionIDs.filter { functionNames[$0] == name }
+        case .matchingFunctions(let pattern):
+            return allFunctionIDs.filter { functionNameMatches(functionNames[$0] ?? "", pattern: pattern) }
+        case .everyCatch, .namedFunctionCatches:
+            return []
+        }
+    }
+
+    private func resolveCatchUnitIndices(
+        onPath: UnitPathScopeRule,
+        catchClauses: [CatchClauseSite],
+        allFunctionIDs: [Int],
+        functionNames: [Int: String]
+    ) -> [Int] {
+        switch onPath.kind {
+        case .everyCatch:
+            return Array(catchClauses.indices)
+        case .namedFunctionCatches(let name):
+            return catchClauses.indices.filter { index in
+                guard let functionID = catchClauses[index].functionID else { return false }
+                return functionNames[functionID] == name
+            }
+        case .everyFunction, .namedFunctions, .matchingFunctions:
+            return []
+        }
+    }
+
+    private func functionNameMatches(_ name: String, pattern: FunctionNamePatternRule) -> Bool {
+        switch pattern {
+        case .exact(let value):
+            return name == value
+        case .prefix(let value):
+            return name.hasPrefix(value)
+        case .suffix(let value):
+            return name.hasSuffix(value)
+        }
+    }
+
+    private func followUpCalls(for trigger: CallSite, scope: FollowUpScopeRule, allCalls: [CallSite]) -> [CallSite] {
+        switch scope {
+        case .sameFunction:
+            guard let functionID = trigger.functionID else { return [] }
+            return allCalls.filter { $0.functionID == functionID }
+        case .entireFile:
+            return allCalls
+        }
+    }
+
+    private func satisfiesErrorHandling(catchClause: CatchClauseSite, check: MustHandleErrorRule) -> Bool {
+        switch check.handling {
+        case .through:
+            return catchClause.ignoredCases.contains(check.targetCase)
+        case .assign(let target):
+            return catchClause.handledCases.contains(check.targetCase)
+                && (catchClause.caseHandling[check.targetCase]?.assignedTargets.contains(target) ?? false)
+        case .transform(let functionName):
+            return catchClause.handledCases.contains(check.targetCase)
+                && (catchClause.caseHandling[check.targetCase]?.calledFunctions.contains(functionName) ?? false)
+        case .rethrow:
+            return catchClause.handledCases.contains(check.targetCase)
+                && (catchClause.caseHandling[check.targetCase]?.hasThrow ?? false)
+        }
+    }
+
+    private func mustHandleErrorReason(for check: MustHandleErrorRule) -> String {
+        switch check.handling {
+        case .through:
+            return "Required through catch handling `case .\(check.targetCase)` was not found."
+        case .assign(let target):
+            return "Required assignment handling for `case .\(check.targetCase)` to `\(target)` was not found."
+        case .transform(let functionName):
+            return "Required transform handling for `case .\(check.targetCase)` using `\(functionName)` was not found."
+        case .rethrow:
+            return "Required rethrow handling for `case .\(check.targetCase)` was not found."
+        }
     }
 
     private func matches(_ target: RuleCallPattern, in calls: [CallSite]) -> Bool {
@@ -372,6 +684,7 @@ private final class FunctionCallCollector: SyntaxVisitor {
     private var nextFunctionID = 0
     private(set) var allFunctionIDs: [Int] = []
     private(set) var functionLocations: [Int: (line: Int, column: Int)] = [:]
+    private(set) var functionNames: [Int: String] = [:]
     private(set) var calls: [CallSite] = []
     private(set) var catchClauses: [CatchClauseSite] = []
     private(set) var creations: [TypeCreationSite] = []
@@ -385,13 +698,11 @@ private final class FunctionCallCollector: SyntaxVisitor {
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
         if let declRef = node.calledExpression.as(DeclReferenceExprSyntax.self) {
-            calls.append(
-                CallSite(
-                    receiver: .none,
-                    method: declRef.baseName.text,
-                    line: location.line,
-                    column: location.column
-                )
+            appendCallSite(
+                receiver: .none,
+                method: declRef.baseName.text,
+                line: location.line,
+                column: location.column
             )
             if let functionID = functionStack.last,
                looksLikeTypeInitializer(name: declRef.baseName.text) {
@@ -406,22 +717,35 @@ private final class FunctionCallCollector: SyntaxVisitor {
                 )
             }
         } else if let memberAccess = node.calledExpression.as(MemberAccessExprSyntax.self) {
-            calls.append(
-                CallSite(
-                    receiver: parseReceiver(memberAccess.base),
-                    method: memberAccess.declName.baseName.text,
-                    line: location.line,
-                    column: location.column
-                )
+            appendCallSite(
+                receiver: parseReceiver(memberAccess.base),
+                method: memberAccess.declName.baseName.text,
+                line: location.line,
+                column: location.column
             )
         }
         return .visitChildren
+    }
+
+    private func appendCallSite(receiver: CallReceiver, method: String, line: Int, column: Int) {
+        let functionID = functionStack.last
+        calls.append(
+            CallSite(
+                receiver: receiver,
+                method: method,
+                functionID: functionID,
+                functionName: functionID.flatMap { functionNames[$0] },
+                line: line,
+                column: column
+            )
+        )
     }
 
     override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
         let functionID = nextFunctionID
         nextFunctionID += 1
         allFunctionIDs.append(functionID)
+        functionNames[functionID] = node.name.text
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
         functionLocations[functionID] = (location.line, location.column)
         functionStack.append(functionID)
@@ -434,20 +758,46 @@ private final class FunctionCallCollector: SyntaxVisitor {
 
     override func visit(_ node: CatchClauseSyntax) -> SyntaxVisitorContinueKind {
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
+        let functionID = functionStack.last
+        let index = catchClauses.count
         catchClauses.append(
             CatchClauseSite(
                 line: location.line,
                 column: location.column,
+                functionID: functionID,
+                functionName: functionID.flatMap { functionNames[$0] },
                 handledCases: [],
                 ignoredCases: [],
-                caseHandling: [:]
+                caseHandling: [:],
+                usesCatchBodyForHandling: []
             )
         )
-        catchClauseStack.append(catchClauses.count - 1)
+        for item in node.catchItems {
+            if let pattern = item.pattern,
+               let caseName = extractCaseName(from: pattern) {
+                catchClauses[index].handledCases.insert(caseName)
+                catchClauses[index].usesCatchBodyForHandling.insert(caseName)
+            }
+            if let whereClause = item.whereClause,
+               let caseName = extractCaseNameFromWhereExpression(whereClause.condition) {
+                catchClauses[index].handledCases.insert(caseName)
+                catchClauses[index].usesCatchBodyForHandling.insert(caseName)
+            }
+        }
+        catchClauseStack.append(index)
         return .visitChildren
     }
 
     override func visitPost(_ node: CatchClauseSyntax) {
+        if let index = catchClauseStack.last {
+            let body = node.body
+            for caseName in catchClauses[index].usesCatchBodyForHandling {
+                if bodyContainsThrough(body) {
+                    catchClauses[index].ignoredCases.insert(caseName)
+                }
+                updateCaseHandling(caseName: caseName, body: body, catchIndex: index)
+            }
+        }
         _ = catchClauseStack.popLast()
     }
 
@@ -530,8 +880,7 @@ private final class FunctionCallCollector: SyntaxVisitor {
             return extractCaseName(from: valueBinding.pattern)
         }
         if let expressionPattern = pattern.as(ExpressionPatternSyntax.self) {
-            if let member = expressionPattern.expression.as(MemberAccessExprSyntax.self),
-               member.base == nil {
+            if let member = expressionPattern.expression.as(MemberAccessExprSyntax.self) {
                 return member.declName.baseName.text
             }
             if let declRef = expressionPattern.expression.as(DeclReferenceExprSyntax.self) {
@@ -546,6 +895,32 @@ private final class FunctionCallCollector: SyntaxVisitor {
             }
         }
         return nil
+    }
+
+    private func extractCaseNameFromWhereExpression(_ expression: ExprSyntax) -> String? {
+        guard let sequence = expression.as(SequenceExprSyntax.self) else {
+            return nil
+        }
+        let parts = Array(sequence.elements)
+        guard parts.count == 3,
+              let operatorExpr = parts[1].as(BinaryOperatorExprSyntax.self),
+              operatorExpr.operator.text == "=="
+        else {
+            return nil
+        }
+        if let caseName = extractUnqualifiedCaseName(from: parts[0]) {
+            return caseName
+        }
+        return extractUnqualifiedCaseName(from: parts[2])
+    }
+
+    private func extractUnqualifiedCaseName(from expression: ExprSyntax) -> String? {
+        guard let member = expression.as(MemberAccessExprSyntax.self),
+              member.base == nil
+        else {
+            return nil
+        }
+        return member.declName.baseName.text
     }
 
     private func parseReceiver(_ expression: ExprSyntax?) -> CallReceiver {
@@ -622,6 +997,9 @@ private final class FunctionCallCollector: SyntaxVisitor {
 }
 
 private enum RuleBodyParser {
+    private static let defaultFunctionScope = UnitPathScopeRule(kind: .everyFunction, ifEmpty: .violate)
+    private static let defaultCatchScope = UnitPathScopeRule(kind: .everyCatch, ifEmpty: .violate)
+
     static func parse(body: String) throws -> ParsedRuleBody {
         let wrappedSource = """
         func __rin_rule_body__() {
@@ -647,31 +1025,51 @@ private enum RuleBodyParser {
             }
             let called = calledName(of: callExpr.calledExpression)
             if called == "MustCall" {
+                let onPath = try parseUnitPathScope(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "onPath" })?.expression,
+                    default: defaultFunctionScope
+                )
+                try validateUnitPathScope(onPath, allowed: .function, predicate: "MustCall")
+                let pattern: RuleCallPattern
                 if let receiverExpr = callExpr.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
                    let methodExpr = callExpr.arguments.first(where: { $0.label?.text == "method" })?.expression {
                     let receiver = try parseReceiverPattern(receiverExpr)
                     guard let methodName = stringLiteralValue(methodExpr) else {
                         throw RuleBodyParserError.invalidClause("MustCall method must be a string literal")
                     }
-                    parsed.mustCallTargets.append(RuleCallPattern(receiver: receiver, methodName: methodName))
-                } else if let firstArg = callExpr.arguments.first?.expression {
-                    parsed.mustCallTargets.append(try parseRuleCallPattern(firstArg))
+                    pattern = RuleCallPattern(receiver: receiver, methodName: methodName)
+                } else if let firstArg = callExpr.arguments.first(where: { $0.label?.text == nil })?.expression {
+                    pattern = try parseRuleCallPattern(firstArg)
                 } else {
                     throw RuleBodyParserError.invalidClause("MustCall requires a target")
                 }
+                parsed.mustCallRules.append(MustCallRule(pattern: pattern, onPath: onPath))
                 continue
             }
             if called == "MustCallAnyOf" {
-                guard let firstArg = callExpr.arguments.first?.expression,
+                let onPath = try parseUnitPathScope(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "onPath" })?.expression,
+                    default: defaultFunctionScope
+                )
+                try validateUnitPathScope(onPath, allowed: .function, predicate: "MustCallAnyOf")
+                guard let firstArg = callExpr.arguments.first(where: { $0.label?.text == nil })?.expression,
                       let arrayExpr = firstArg.as(ArrayExprSyntax.self)
                 else {
                     throw RuleBodyParserError.invalidClause("MustCallAnyOf requires array literal")
                 }
                 let patterns = try arrayExpr.elements.map { try parseRuleCallPattern($0.expression) }
-                parsed.mustCallAnyOfGroups.append(patterns)
+                parsed.mustCallAnyOfRules.append(MustCallAnyOfRule(patterns: patterns, onPath: onPath))
                 continue
             }
             if called == "MustHandleError" {
+                let onPath = try parseUnitPathScope(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "onPath" })?.expression,
+                    default: defaultCatchScope
+                )
+                try validateUnitPathScope(onPath, allowed: .catchScope, predicate: "MustHandleError")
+                let whenUnmentioned = try parseWhenUnmentioned(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "whenUnmentioned" })?.expression
+                )
                 let targetArg = callExpr.arguments.first(where: { $0.label?.text == "target" })
                     ?? callExpr.arguments.first(where: { $0.label?.text == "check" })
                 guard let targetArg,
@@ -683,23 +1081,36 @@ private enum RuleBodyParser {
                     throw RuleBodyParserError.invalidClause("MustHandleError(target: .case(\"...\"), as: <handling>) is required")
                 }
                 let handling = try parseErrorHandling(callExpr.arguments)
-                parsed.mustHandleErrorChecks.append(
-                    ErrorHandlingCheck(targetCase: value, handling: handling)
+                parsed.mustHandleErrorRules.append(
+                    MustHandleErrorRule(
+                        targetCase: value,
+                        handling: handling,
+                        onPath: onPath,
+                        whenUnmentioned: whenUnmentioned
+                    )
                 )
                 continue
             }
-            if called == "mustAlsoCall" {
+            if called == "mustAlsoCall" || called == "mustAlsoCallAnyOf" {
                 let parsedWhenCalls = try parseWhenCallsChain(from: callExpr)
-                let trigger = parsedWhenCalls.trigger
-                let requirements = parsedWhenCalls.requirements
-                parsed.whenCallsConditions.append((trigger: trigger, requirements: requirements))
+                parsed.whenCallsConditions.append(parsedWhenCalls)
                 continue
             }
             if called == "MustDeclare" {
-                guard let firstArg = callExpr.arguments.first?.expression else {
+                let onPath = try parseUnitPathScope(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "onPath" })?.expression,
+                    default: defaultFunctionScope
+                )
+                try validateUnitPathScope(onPath, allowed: .function, predicate: "MustDeclare")
+                guard let firstArg = callExpr.arguments.first(where: { $0.label?.text == nil })?.expression else {
                     throw RuleBodyParserError.invalidClause("MustDeclare requires declaration constraint")
                 }
-                parsed.mustDeclareLocalChecks.append(try parseMustDeclareLocal(firstArg))
+                parsed.mustDeclareRules.append(
+                    MustDeclareRule(
+                        binding: try parseMustDeclareLocal(firstArg),
+                        onPath: onPath
+                    )
+                )
                 continue
             }
             if called == "mustNotUse" || called == "mustUse" || called == "inArgument" || called == "WhenCreates" {
@@ -711,11 +1122,142 @@ private enum RuleBodyParser {
                 parsed.whenCallsNameChecks.append(try parseWhenCallsNameChain(from: callExpr))
                 continue
             }
+            if called == "WhenCalls" {
+                let parsedWhenCalls = try parseWhenCallsChain(from: callExpr)
+                parsed.whenCallsConditions.append(parsedWhenCalls)
+                continue
+            }
             throw RuleBodyParserError.invalidClause(
                 "Unsupported top-level clause in rule body: \(called ?? "unknown")"
             )
         }
         return parsed
+    }
+
+    private enum AllowedUnitPathScopes {
+        case function
+        case catchScope
+    }
+
+    private static func validateUnitPathScope(
+        _ scope: UnitPathScopeRule,
+        allowed: AllowedUnitPathScopes,
+        predicate: String
+    ) throws {
+        switch (allowed, scope.kind) {
+        case (.function, .everyCatch), (.function, .namedFunctionCatches):
+            throw RuleBodyParserError.invalidClause("\(predicate) cannot use catch onPath scope \(scope.kind.rendered)")
+        case (.catchScope, .everyFunction), (.catchScope, .namedFunctions), (.catchScope, .matchingFunctions):
+            throw RuleBodyParserError.invalidClause("\(predicate) cannot use function onPath scope \(scope.kind.rendered)")
+        default:
+            break
+        }
+    }
+
+    private static func parseUnitPathScope(
+        from expression: ExprSyntax?,
+        default defaultScope: UnitPathScopeRule
+    ) throws -> UnitPathScopeRule {
+        guard let expression else { return defaultScope }
+        guard let callExpr = expression.as(FunctionCallExprSyntax.self),
+              let member = callExpr.calledExpression.as(MemberAccessExprSyntax.self),
+              member.base?.as(DeclReferenceExprSyntax.self)?.baseName.text == "UnitPathScope"
+        else {
+            throw RuleBodyParserError.invalidClause("onPath must use UnitPathScope")
+        }
+        let ifEmpty = try parseIfEmptyPolicy(from: callExpr.arguments)
+        switch member.declName.baseName.text {
+        case "everyFunction":
+            return UnitPathScopeRule(kind: .everyFunction, ifEmpty: ifEmpty)
+        case "namedFunctions":
+            guard let nameExpr = callExpr.arguments.first?.expression,
+                  let name = stringLiteralValue(nameExpr) else {
+                throw RuleBodyParserError.invalidClause("namedFunctions requires a string literal")
+            }
+            return UnitPathScopeRule(kind: .namedFunctions(name), ifEmpty: ifEmpty)
+        case "matchingFunctions":
+            guard let patternExpr = callExpr.arguments.first?.expression else {
+                throw RuleBodyParserError.invalidClause("matchingFunctions requires a pattern")
+            }
+            return UnitPathScopeRule(kind: .matchingFunctions(try parseFunctionNamePattern(patternExpr)), ifEmpty: ifEmpty)
+        case "everyCatch":
+            return UnitPathScopeRule(kind: .everyCatch, ifEmpty: ifEmpty)
+        case "namedFunctionCatches":
+            guard let nameExpr = callExpr.arguments.first?.expression,
+                  let name = stringLiteralValue(nameExpr) else {
+                throw RuleBodyParserError.invalidClause("namedFunctionCatches requires a string literal")
+            }
+            return UnitPathScopeRule(kind: .namedFunctionCatches(name), ifEmpty: ifEmpty)
+        default:
+            throw RuleBodyParserError.invalidClause("Unknown UnitPathScope: \(member.declName.baseName.text)")
+        }
+    }
+
+    private static func parseIfEmptyPolicy(from arguments: LabeledExprListSyntax) throws -> EmptyUnitPolicyRule {
+        guard let ifEmptyArg = arguments.first(where: { $0.label?.text == "ifEmpty" }) else {
+            return .violate
+        }
+        if let member = ifEmptyArg.expression.as(MemberAccessExprSyntax.self) {
+            switch member.declName.baseName.text {
+            case "skip":
+                return .skip
+            case "violate":
+                return .violate
+            default:
+                throw RuleBodyParserError.invalidClause("ifEmpty must be .skip or .violate")
+            }
+        }
+        throw RuleBodyParserError.invalidClause("ifEmpty must be .skip or .violate")
+    }
+
+    private static func parseFunctionNamePattern(_ expression: ExprSyntax) throws -> FunctionNamePatternRule {
+        guard let patternCall = expression.as(FunctionCallExprSyntax.self),
+              let called = calledName(of: patternCall.calledExpression),
+              let firstArg = patternCall.arguments.first?.expression,
+              let value = stringLiteralValue(firstArg)
+        else {
+            throw RuleBodyParserError.invalidClause("function name pattern must be .exact/.prefix/.suffix with string literal")
+        }
+        switch called {
+        case "exact":
+            return .exact(value)
+        case "prefix":
+            return .prefix(value)
+        case "suffix":
+            return .suffix(value)
+        default:
+            throw RuleBodyParserError.invalidClause("Unsupported function name pattern: \(called)")
+        }
+    }
+
+    private static func parseFollowUpScope(from expression: ExprSyntax?) throws -> FollowUpScopeRule {
+        guard let expression else { return .sameFunction }
+        if let member = expression.as(MemberAccessExprSyntax.self) {
+            switch member.declName.baseName.text {
+            case "sameFunction":
+                return .sameFunction
+            case "entireFile":
+                return .entireFile
+            default:
+                throw RuleBodyParserError.invalidClause("WhenCalls onPath must be .sameFunction or .entireFile")
+            }
+        }
+        throw RuleBodyParserError.invalidClause("WhenCalls onPath must be .sameFunction or .entireFile")
+    }
+
+    private static func parseWhenUnmentioned(from expression: ExprSyntax?) throws -> WhenUnmentionedPolicyRule {
+        guard let expression else { return .violate }
+        if let member = expression.as(MemberAccessExprSyntax.self) {
+            switch member.declName.baseName.text {
+            case "skip":
+                return .skip
+            case "violate":
+                return .violate
+            default:
+                throw RuleBodyParserError.invalidClause("whenUnmentioned must be .skip or .violate")
+            }
+        }
+        throw RuleBodyParserError.invalidClause("whenUnmentioned must be .skip or .violate")
     }
 
     private static func parseMustDeclareLocal(_ expression: ExprSyntax) throws -> LocalBindingRule {
@@ -850,12 +1392,12 @@ private enum RuleBodyParser {
         }
     }
 
-    private static func parseWhenCallsChain(
-        from expression: FunctionCallExprSyntax
-    ) throws -> (trigger: RuleCallPattern, requirements: [RuleCallPattern]) {
+    private static func parseWhenCallsChain(from expression: FunctionCallExprSyntax) throws -> WhenCallsCondition {
         var current: FunctionCallExprSyntax? = expression
         var trigger: RuleCallPattern?
-        var requirements: [RuleCallPattern] = []
+        var andRequirements: [RuleCallPattern] = []
+        var orRequirementGroups: [[RuleCallPattern]] = []
+        var followUpScope: FollowUpScopeRule = .sameFunction
 
         while let call = current {
             let called = calledName(of: call.calledExpression)
@@ -867,21 +1409,34 @@ private enum RuleBodyParser {
                     guard let methodName = stringLiteralValue(methodExpr) else {
                         throw RuleBodyParserError.invalidClause("mustAlsoCall method must be string literal")
                     }
-                    requirements.insert(
+                    andRequirements.insert(
                         RuleCallPattern(receiver: receiver, methodName: methodName),
                         at: 0
                     )
                 } else if let reqExpr = call.arguments.first?.expression,
                           let reqArray = reqExpr.as(ArrayExprSyntax.self) {
                     let parsed = try reqArray.elements.map { try parseRuleCallPattern($0.expression) }
-                    requirements.insert(contentsOf: parsed, at: 0)
+                    andRequirements.insert(contentsOf: parsed, at: 0)
                 } else {
                     throw RuleBodyParserError.invalidClause(
                         "mustAlsoCall requires either receiver/method or requirements array"
                     )
                 }
                 current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
+            case "mustAlsoCallAnyOf":
+                guard let arrayExpr = call.arguments.first?.expression.as(ArrayExprSyntax.self) else {
+                    throw RuleBodyParserError.invalidClause("mustAlsoCallAnyOf requires array literal")
+                }
+                let group = try arrayExpr.elements.map { try parseRuleCallPattern($0.expression) }
+                orRequirementGroups.insert(group, at: 0)
+                current = call.calledExpression.as(MemberAccessExprSyntax.self)?.base?.as(FunctionCallExprSyntax.self)
             case "WhenCalls":
+                if call.arguments.contains(where: { $0.label?.text == "name" }) {
+                    throw RuleBodyParserError.invalidClause("WhenCalls(name:) cannot use follow-up onPath scope")
+                }
+                followUpScope = try parseFollowUpScope(
+                    from: call.arguments.first(where: { $0.label?.text == "onPath" })?.expression
+                )
                 if let receiverExpr = call.arguments.first(where: { $0.label?.text == "receiver" })?.expression,
                    let methodExpr = call.arguments.first(where: { $0.label?.text == "method" })?.expression {
                     let receiver = try parseReceiverPattern(receiverExpr)
@@ -905,10 +1460,15 @@ private enum RuleBodyParser {
         guard let trigger else {
             throw RuleBodyParserError.invalidClause("WhenCalls(...).mustAlsoCall(...) requires a trigger")
         }
-        guard !requirements.isEmpty else {
-            throw RuleBodyParserError.invalidClause("mustAlsoCall requires at least one requirement")
+        guard !andRequirements.isEmpty || !orRequirementGroups.isEmpty else {
+            throw RuleBodyParserError.invalidClause("WhenCalls requires at least one follow-up requirement")
         }
-        return (trigger, requirements)
+        return WhenCallsCondition(
+            trigger: trigger,
+            andRequirements: andRequirements,
+            orRequirementGroups: orRequirementGroups,
+            followUpScope: followUpScope
+        )
     }
 
     private static func parseRuleCallPattern(_ expression: ExprSyntax) throws -> RuleCallPattern {
@@ -1021,12 +1581,90 @@ private enum RuleBodyParserError: LocalizedError {
 }
 
 private struct ParsedRuleBody {
-    var mustCallTargets: [RuleCallPattern] = []
-    var mustCallAnyOfGroups: [[RuleCallPattern]] = []
-    var whenCallsConditions: [(trigger: RuleCallPattern, requirements: [RuleCallPattern])] = []
-    var mustHandleErrorChecks: [ErrorHandlingCheck] = []
-    var mustDeclareLocalChecks: [LocalBindingRule] = []
+    var mustCallRules: [MustCallRule] = []
+    var mustCallAnyOfRules: [MustCallAnyOfRule] = []
+    var whenCallsConditions: [WhenCallsCondition] = []
+    var mustHandleErrorRules: [MustHandleErrorRule] = []
+    var mustDeclareRules: [MustDeclareRule] = []
     var whenCallsNameChecks: [WhenCallsNameRule] = []
+}
+
+private struct MustCallRule {
+    let pattern: RuleCallPattern
+    let onPath: UnitPathScopeRule
+}
+
+private struct MustCallAnyOfRule {
+    let patterns: [RuleCallPattern]
+    let onPath: UnitPathScopeRule
+}
+
+private struct MustDeclareRule {
+    let binding: LocalBindingRule
+    let onPath: UnitPathScopeRule
+}
+
+private struct WhenCallsCondition {
+    let trigger: RuleCallPattern
+    let andRequirements: [RuleCallPattern]
+    let orRequirementGroups: [[RuleCallPattern]]
+    let followUpScope: FollowUpScopeRule
+}
+
+private struct MustHandleErrorRule {
+    let targetCase: String
+    let handling: ErrorHandlingKind
+    let onPath: UnitPathScopeRule
+    let whenUnmentioned: WhenUnmentionedPolicyRule
+}
+
+private struct UnitPathScopeRule {
+    let kind: UnitPathScopeKind
+    let ifEmpty: EmptyUnitPolicyRule
+}
+
+private enum UnitPathScopeKind {
+    case everyFunction
+    case namedFunctions(String)
+    case matchingFunctions(FunctionNamePatternRule)
+    case everyCatch
+    case namedFunctionCatches(String)
+
+    var rendered: String {
+        switch self {
+        case .everyFunction:
+            return ".everyFunction"
+        case .namedFunctions(let name):
+            return ".namedFunctions(\"\(name)\")"
+        case .matchingFunctions:
+            return ".matchingFunctions(...)"
+        case .everyCatch:
+            return ".everyCatch"
+        case .namedFunctionCatches(let name):
+            return ".namedFunctionCatches(\"\(name)\")"
+        }
+    }
+}
+
+private enum EmptyUnitPolicyRule {
+    case skip
+    case violate
+}
+
+private enum FollowUpScopeRule {
+    case sameFunction
+    case entireFile
+}
+
+private enum WhenUnmentionedPolicyRule {
+    case skip
+    case violate
+}
+
+private enum FunctionNamePatternRule {
+    case exact(String)
+    case prefix(String)
+    case suffix(String)
 }
 
 private struct WhenCallsNameRule {
@@ -1036,9 +1674,24 @@ private struct WhenCallsNameRule {
     let mustNotUseIdentifier: String
 }
 
+struct CollectedCallSite {
+    let receiver: String
+    let method: String
+    let functionName: String?
+}
+
+struct CollectedCatchClause {
+    let line: Int
+    let column: Int
+    let functionName: String?
+    let handledCases: [String]
+}
+
 private struct CallSite {
     let receiver: CallReceiver
     let method: String
+    let functionID: Int?
+    let functionName: String?
     let line: Int
     let column: Int
 }
@@ -1047,19 +1700,28 @@ private enum CallReceiver {
     case none
     case simpleName(String)
     case complex
+
+    var collectedDescription: String {
+        switch self {
+        case .none:
+            return "none"
+        case .simpleName(let name):
+            return name
+        case .complex:
+            return "complex"
+        }
+    }
 }
 
 private struct CatchClauseSite {
     let line: Int
     let column: Int
+    let functionID: Int?
+    let functionName: String?
     var handledCases: Set<String>
     var ignoredCases: Set<String>
     var caseHandling: [String: CaseHandlingSnapshot]
-}
-
-private struct ErrorHandlingCheck {
-    let targetCase: String
-    let handling: ErrorHandlingKind
+    var usesCatchBodyForHandling: Set<String>
 }
 
 private enum ErrorHandlingKind {

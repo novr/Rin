@@ -173,11 +173,47 @@ Examples:
 ```swift
 Rule(id: "transaction_pair") {
     WhenCalls(receiver: .symbol("DB"), method: "beginTransaction")
-        .mustAlsoCall(receiver: .symbol("DB"), method: "commit")
-        .mustAlsoCall(receiver: .symbol("DB"), method: "rollback")
+        .mustAlsoCallAnyOf([
+            RuleCall(receiver: .symbol("DB"), method: "commit"),
+            RuleCall(receiver: .symbol("DB"), method: "rollback"),
+        ])
 }
 .message("Transactions must end with commit() or rollback().")
 .severity(.error)
+```
+
+By default, `WhenCalls` evaluates follow-up calls within the **same function** as the trigger (`onPath: .sameFunction`). Use `onPath: .entireFile` to opt into file-wide co-occurrence.
+
+## Evaluation Model
+
+Rinter evaluates each predicate **per evaluation unit** (function, catch clause, or trigger call site). Violations are reported at the unit's anchor location.
+
+| Principle | Behavior |
+|-----------|----------|
+| Per-unit evaluation | Each function / catch / trigger is checked independently |
+| `onPath` on predicate | Scope is declared on the predicate itself (not chained afterward) |
+| Empty units (`ifEmpty`) | When no units match `onPath`, `.violate` (default) or `.skip` |
+| Conditional predicates | When no trigger matches, the rule is skipped |
+| Violation location | Anchor of the failing unit (function declaration, `catch`, or trigger call) |
+
+| Predicate | Unit | Default `onPath` |
+|-----------|------|------------------|
+| `MustCall` / `MustCallAnyOf` / `MustDeclare` | Each `FunctionDecl` | `everyFunction(ifEmpty: .violate)` |
+| `MustHandleError` | Each `catch` clause | `everyCatch(ifEmpty: .violate)` |
+| `WhenCalls` + follow-ups | Each trigger call | `sameFunction` |
+| `WhenCalls(name:)` + `MustDeclare` | Each matching type creation | Creation's function (no `onPath`) |
+
+`MustHandleError` detects case mentions from catch patterns, `if case` / `guard case` in the catch body, and `where` clauses comparing against `.caseName`. Unmentioned catch clauses violate by default (`whenUnmentioned: .violate`); use `whenUnmentioned: .skip` to allow generic handlers.
+
+Scope examples:
+
+```swift
+MustCall(receiver: .symbol("Analytics"), method: "sendScreen",
+         onPath: .namedFunctions("load", ifEmpty: .skip))
+
+MustHandleError(target: .case("cancelled"), as: .through,
+                onPath: .everyCatch(ifEmpty: .violate),
+                whenUnmentioned: .violate)
 ```
 
 ## CLI
@@ -237,6 +273,10 @@ jobs:
 - Receiver matching is syntax-based (`.symbol("name")` matches base identifier exactly).
 - `.through` is syntax-based for control-flow exits and does not track jump destination semantics for nested loops/blocks.
 - Scope control is path-based (`Target` and `Rule.scope`).
+- Co-occurrence checks do not guarantee call order or 1:1 pairing.
+- Helper delegation (calls moved to private helpers) is not detected.
+- `deinit` and `subscript` are not attached to function scope metadata.
+- `catch is Type` and non-literal `where` conditions are not treated as case mentions.
 
 ## Special Thanks
 

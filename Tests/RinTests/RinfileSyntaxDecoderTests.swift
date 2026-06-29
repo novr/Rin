@@ -129,3 +129,29 @@ import Testing
     #expect(policy.rules[0].body.contains("WhenCalls(name: .suffix(\"StoreWitness\"))"))
     #expect(policy.rules[0].body.contains(".inArgument(argumentLabel: \"performer\")"))
 }
+
+@Test func rinfileDecoderRoundTripsOnPathAndMustAlsoCallAnyOf() throws {
+    let source = #"""
+    let policy = Rin.Policy {
+        Rules {
+            Rule(id: "transaction_pair") {
+                MustCall(receiver: .symbol("Analytics"), method: "sendScreen", onPath: UnitPathScope.namedFunctions("load", ifEmpty: .skip))
+                WhenCalls(receiver: .symbol("DB"), method: "beginTransaction", onPath: .sameFunction)
+                    .mustAlsoCallAnyOf([
+                        RuleCall(receiver: .symbol("DB"), method: "commit"),
+                        RuleCall(receiver: .symbol("DB"), method: "rollback"),
+                    ])
+                MustHandleError(target: .case("cancelled"), as: .through, onPath: UnitPathScope.everyCatch(ifEmpty: .violate), whenUnmentioned: .violate)
+            }
+        }
+    }
+    """#
+
+    let policy = try RinfileSyntaxDecoder().decode(source: source)
+    let body = policy.rules[0].body
+    #expect(body.contains(#"onPath: UnitPathScope.namedFunctions("load", ifEmpty: .skip)"#))
+    #expect(body.contains("onPath: .sameFunction"))
+    #expect(body.contains("mustAlsoCallAnyOf(["))
+    #expect(body.contains(#"onPath: UnitPathScope.everyCatch(ifEmpty: .violate)"#))
+    #expect(body.contains("whenUnmentioned: .violate"))
+}

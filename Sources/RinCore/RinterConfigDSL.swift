@@ -158,6 +158,88 @@ struct RuleClause {
     }
 }
 
+enum EmptyUnitPolicy {
+    case skip
+    case violate
+
+    fileprivate var rendered: String {
+        switch self {
+        case .skip:
+            return ".skip"
+        case .violate:
+            return ".violate"
+        }
+    }
+}
+
+enum FunctionNamePattern {
+    case exact(String)
+    case prefix(String)
+    case suffix(String)
+
+    fileprivate var rendered: String {
+        switch self {
+        case .exact(let value):
+            return #".exact("\#(value)")"#
+        case .prefix(let value):
+            return #".prefix("\#(value)")"#
+        case .suffix(let value):
+            return #".suffix("\#(value)")"#
+        }
+    }
+}
+
+enum UnitPathScope {
+    case everyFunction(ifEmpty: EmptyUnitPolicy = .violate)
+    case namedFunctions(String, ifEmpty: EmptyUnitPolicy = .violate)
+    case matchingFunctions(FunctionNamePattern, ifEmpty: EmptyUnitPolicy = .violate)
+    case everyCatch(ifEmpty: EmptyUnitPolicy = .violate)
+    case namedFunctionCatches(String, ifEmpty: EmptyUnitPolicy = .violate)
+
+    fileprivate var rendered: String {
+        switch self {
+        case .everyFunction(let ifEmpty):
+            return #"UnitPathScope.everyFunction(ifEmpty: \#(ifEmpty.rendered))"#
+        case .namedFunctions(let name, let ifEmpty):
+            return #"UnitPathScope.namedFunctions("\#(name)", ifEmpty: \#(ifEmpty.rendered))"#
+        case .matchingFunctions(let pattern, let ifEmpty):
+            return #"UnitPathScope.matchingFunctions(\#(pattern.rendered), ifEmpty: \#(ifEmpty.rendered))"#
+        case .everyCatch(let ifEmpty):
+            return #"UnitPathScope.everyCatch(ifEmpty: \#(ifEmpty.rendered))"#
+        case .namedFunctionCatches(let name, let ifEmpty):
+            return #"UnitPathScope.namedFunctionCatches("\#(name)", ifEmpty: \#(ifEmpty.rendered))"#
+        }
+    }
+}
+
+enum FollowUpScope {
+    case sameFunction
+    case entireFile
+
+    fileprivate var rendered: String {
+        switch self {
+        case .sameFunction:
+            return ".sameFunction"
+        case .entireFile:
+            return ".entireFile"
+        }
+    }
+}
+
+enum WhenUnmentionedPolicy {
+    case skip
+    case violate
+
+    fileprivate var rendered: String {
+        switch self {
+        case .skip:
+            return ".skip"
+        case .violate:
+            return ".violate"
+        }
+    }
+}
+
 enum TypeNamePattern {
     case exact(String)
     case prefix(String)
@@ -248,22 +330,52 @@ struct WhenCallsNameClause {
 struct WhenCallsClause {
     fileprivate let trigger: RuleCallTarget
     fileprivate let requirements: [RuleCallTarget]
+    fileprivate let orRequirementGroups: [[RuleCallTarget]]
+    fileprivate let followUpScope: FollowUpScope
 
-    fileprivate init(trigger: RuleCallTarget, requirements: [RuleCallTarget] = []) {
+    fileprivate init(
+        trigger: RuleCallTarget,
+        requirements: [RuleCallTarget] = [],
+        orRequirementGroups: [[RuleCallTarget]] = [],
+        followUpScope: FollowUpScope = .sameFunction
+    ) {
         self.trigger = trigger
         self.requirements = requirements
+        self.orRequirementGroups = orRequirementGroups
+        self.followUpScope = followUpScope
     }
 
     func mustAlsoCall(receiver: RuleCallReceiver, method: String) -> WhenCallsClause {
         var updated = requirements
         updated.append(RuleCallTarget(receiver: receiver, method: method))
-        return WhenCallsClause(trigger: trigger, requirements: updated)
+        return WhenCallsClause(
+            trigger: trigger,
+            requirements: updated,
+            orRequirementGroups: orRequirementGroups,
+            followUpScope: followUpScope
+        )
+    }
+
+    func mustAlsoCallAnyOf(_ targets: [RuleCallTarget]) -> WhenCallsClause {
+        var updated = orRequirementGroups
+        updated.append(targets)
+        return WhenCallsClause(
+            trigger: trigger,
+            requirements: requirements,
+            orRequirementGroups: updated,
+            followUpScope: followUpScope
+        )
     }
 
     fileprivate var rendered: String {
-        var result = "WhenCalls(receiver: \(trigger.receiver.rendered), method: \"\(trigger.methodName)\")"
+        var result =
+            "WhenCalls(receiver: \(trigger.receiver.rendered), method: \"\(trigger.methodName)\", onPath: \(followUpScope.rendered))"
         for requirement in requirements {
             result += ".mustAlsoCall(receiver: \(requirement.receiver.rendered), method: \"\(requirement.methodName)\")"
+        }
+        for group in orRequirementGroups {
+            let renderedTargets = group.map(\.rendered).joined(separator: ",\n")
+            result += ".mustAlsoCallAnyOf([\n\(renderedTargets)\n])"
         }
         return result
     }
@@ -331,8 +443,17 @@ struct RuleCallTarget {
     }
 }
 
-func MustHandleError(target: ErrorTarget, as handling: ErrorHandling) -> RuleClause {
-    RuleClause("MustHandleError(target: \(target.rendered), as: \(handling.rendered))")
+func MustHandleError(
+    target: ErrorTarget,
+    as handling: ErrorHandling,
+    onPath: UnitPathScope = .everyCatch(),
+    whenUnmentioned: WhenUnmentionedPolicy = .violate
+) -> RuleClause {
+    RuleClause(
+        """
+        MustHandleError(target: \(target.rendered), as: \(handling.rendered), onPath: \(onPath.rendered), whenUnmentioned: \(whenUnmentioned.rendered))
+        """
+    )
 }
 
 func MustHandleError(check: ErrorTarget) -> RuleClause {
@@ -343,19 +464,25 @@ func RuleCall(receiver: RuleCallReceiver, method: String) -> RuleCallTarget {
     RuleCallTarget(receiver: receiver, method: method)
 }
 
-func MustCall(receiver: RuleCallReceiver, method: String) -> RuleClause {
-    RuleClause("MustCall(receiver: \(receiver.rendered), method: \"\(method)\")")
+func MustCall(
+    receiver: RuleCallReceiver,
+    method: String,
+    onPath: UnitPathScope = .everyFunction()
+) -> RuleClause {
+    RuleClause(
+        "MustCall(receiver: \(receiver.rendered), method: \"\(method)\", onPath: \(onPath.rendered))"
+    )
 }
 
-func MustCall(_ target: RuleCallTarget) -> RuleClause {
-    MustCall(receiver: target.receiver, method: target.methodName)
+func MustCall(_ target: RuleCallTarget, onPath: UnitPathScope = .everyFunction()) -> RuleClause {
+    MustCall(receiver: target.receiver, method: target.methodName, onPath: onPath)
 }
 
-func MustCallAnyOf(_ targets: [RuleCallTarget]) -> RuleClause {
+func MustCallAnyOf(_ targets: [RuleCallTarget], onPath: UnitPathScope = .everyFunction()) -> RuleClause {
     let renderedTargets = targets.map { target in
         "RuleCall(receiver: \(target.receiver.rendered), method: \"\(target.methodName)\")"
     }.joined(separator: ",\n")
-    return RuleClause("MustCallAnyOf([\n\(renderedTargets)\n])")
+    return RuleClause("MustCallAnyOf([\n\(renderedTargets)\n], onPath: \(onPath.rendered))")
 }
 
 func WhenCalls(_ trigger: RuleCallTarget, mustAlsoCall requirements: [RuleCallTarget]) -> RuleClause {
@@ -366,12 +493,19 @@ func WhenCalls(_ trigger: RuleCallTarget, mustAlsoCall requirements: [RuleCallTa
     return RuleClause(clause.rendered)
 }
 
-func WhenCalls(receiver: RuleCallReceiver, method: String) -> WhenCallsClause {
-    WhenCallsClause(trigger: RuleCallTarget(receiver: receiver, method: method))
+func WhenCalls(
+    receiver: RuleCallReceiver,
+    method: String,
+    onPath: FollowUpScope = .sameFunction
+) -> WhenCallsClause {
+    WhenCallsClause(
+        trigger: RuleCallTarget(receiver: receiver, method: method),
+        followUpScope: onPath
+    )
 }
 
-func MustDeclare(_ constraint: DeclarationConstraint) -> RuleClause {
-    RuleClause("MustDeclare(\(constraint.rendered))")
+func MustDeclare(_ constraint: DeclarationConstraint, onPath: UnitPathScope = .everyFunction()) -> RuleClause {
+    RuleClause("MustDeclare(\(constraint.rendered), onPath: \(onPath.rendered))")
 }
 
 func WhenCalls(name: TypeNamePattern) -> WhenCallsNameClause {
