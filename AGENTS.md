@@ -32,6 +32,15 @@
   - `2`: runtime/config/parser errors
 - AST で構造的に実装できないルールは導入しない。
 
+## ドキュメント
+- 正本の分担:
+  - `README.md` — 利用者向け（インストール、Rinfile 例、制限事項の要約）
+  - `skills/rin-dsl-rule-extraction/SKILL.md` — 既存案件へのルール抽出（意味論要約、プロンプト、出力 schema）
+  - `AGENTS.md` — 本ファイル（実装・運用の非交渉ルール）
+  - `Sources/RinCore/RinterConfigDSL.swift` — DSL 著者 API の正本
+- skill 配布: `npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y`（明示 invoke: `/rin-dsl-rule-extraction`）
+- DSL デコードまたは evaluator 意味論を変えたら、**テスト**に加え **README の例** と **SKILL.md の意味論・プロンプト** を同期する。README から `docs/` へリンクしない。
+
 ## GIT
 - 変更は最小・意図保存で行い、大きな無関係リファクタは避ける。
 - changelog は release note でのみ扱う（ファイル運用はしない）。

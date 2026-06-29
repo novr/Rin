@@ -52,10 +52,15 @@ let policy = Rin.Policy {
         exclude: ["**/Generated/**", "**/*Mock*.swift"]
     )
     Rules {
-        Rule(id: "viewmodel_tracks_screen") {
-            MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
+        Rule(id: "viewmodel_load_tracks_screen") {
+            MustCall(
+                receiver: .symbol("Analytics"),
+                method: "sendScreen",
+                onPath: .namedFunctions("load", ifEmpty: .skip)
+            )
         }
-        .message("ViewModel entry flows must send screen analytics.")
+        .scope(include: ["**/*ViewModel.swift"])
+        .message("ViewModel.load must send screen analytics.")
         .severity(.error)
     }
 }
@@ -71,34 +76,23 @@ rinter
 
 ```text
 ❌ Semantic policy violation(s) found.
-Features/Home/HomeViewModel.swift:42:13: [viewmodel_tracks_screen]
+Features/Home/HomeViewModel.swift:42:13: [viewmodel_load_tracks_screen]
 Required call `[symbol(Analytics), sendScreen]` was not found.
 ❌ Semantic policy violations detected.
 ```
 
 ## Configuration
 
-Minimal policy:
+Same as [Quick Start](#quick-start). Add `exclude` on `Rule.scope` to skip mocks and generated code:
 
 ```swift
-let policy = Rin.Policy {
-    Target(
-        include: ["App/**/*.swift", "Features/**/*.swift"],
-        exclude: ["**/Generated/**"]
-    )
-    Rules {
-        Rule(id: "viewmodel_tracks_screen") {
-            MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
-        }
-        .scope(
-            include: ["**/*ViewModel.swift"],
-            exclude: ["**/*Mock*.swift"]
-        )
-        .message("ViewModel entry flows must send screen analytics.")
-        .severity(.error)
-    }
-}
+.scope(
+    include: ["**/*ViewModel.swift"],
+    exclude: ["**/*Mock*.swift", "**/Generated/**"]
+)
 ```
+
+Narrow **files** with `Rule.scope` and **functions** with `onPath` on each predicate.
 
 ## Scan Paths
 
@@ -114,59 +108,54 @@ Target(
 
 ## Rule Scope
 
-Use `Rule.scope(include:exclude:)` to narrow a rule to specific files.
+`Rule.scope` limits which **files** a rule applies to (separate from `onPath`, which limits **functions** or **catch** units inside those files).
 
 ```swift
-Rule(id: "viewmodel_tracks_screen") {
-    MustCall(receiver: .symbol("Analytics"), method: "sendScreen")
-}
 .scope(
     include: ["**/*ViewModel.swift"],
     exclude: ["**/*Mock*.swift"]
 )
-.message("ViewModel entry flows must send screen analytics.")
-.severity(.error)
 ```
 
 ## Required Calls
 
 ```swift
 Rule(id: "authorization_single") {
-    MustCall(receiver: .symbol("Authorizer"), method: "authorize")
+    MustCall(
+        receiver: .symbol("Authorizer"),
+        method: "authorize",
+        onPath: .namedFunctions("execute", ifEmpty: .skip)
+    )
 }
 
 Rule(id: "authorization_any") {
     MustCallAnyOf([
         RuleCall(receiver: .symbol("Authorizer"), method: "authorize"),
         RuleCall(receiver: .symbol("Authorizer"), method: "can")
-    ])
+    ], onPath: .namedFunctions("execute", ifEmpty: .skip))
 }
 ```
+
+`MustCall` and `MustCallAnyOf` default to `everyFunction(ifEmpty: .violate)` when `onPath` is omitted — prefer `namedFunctions` or `matchingFunctions` with `ifEmpty: .skip` for named entry points.
 
 ## Error Handling
 
 ```swift
 Rule(id: "store_catch_cancellation") {
-    MustHandleError(target: .case("cancelled"), as: .through)
+    MustHandleError(
+        target: .case("cancelled"),
+        as: .through,
+        onPath: .everyCatch(ifEmpty: .violate)
+    )
 }
 .scope(
     include: ["**/Domain/Store/*Store.swift"]
 )
-.message("Store の catch では cancelled を読み捨てること。")
+.message("Store catch blocks must ignore cancelled via control-flow exit.")
 .severity(.error)
 ```
 
-`MustHandleError` supports these handling modes:
-- `.through`
-- `.assign(to: "...")`
-- `.transform(by: "...")`
-- `.rethrow`
-
-`as: .through` is considered satisfied only when the target case itself exits control flow (`return`, `break`, or `continue`).
-
-Examples:
-- OK: `if case .cancelled = error { return }`
-- NG: `guard case .cancelled = error else { return }` (the exit path is non-target side)
+`.through` requires the target case branch to exit via `return`, `break`, or `continue` (not `guard case … else { return }` on the non-target side).
 
 ## Paired Calls
 
@@ -178,43 +167,24 @@ Rule(id: "transaction_pair") {
             RuleCall(receiver: .symbol("DB"), method: "rollback"),
         ])
 }
+.scope(include: ["**/Database*.swift"])
 .message("Transactions must end with commit() or rollback().")
 .severity(.error)
 ```
 
-By default, `WhenCalls` evaluates follow-up calls within the **same function** as the trigger (`onPath: .sameFunction`). Use `onPath: .entireFile` to opt into file-wide co-occurrence.
+By default, `WhenCalls` checks follow-ups in the **same function** as the trigger.
 
-## Evaluation Model
+## Adopting to an existing project
 
-Rinter evaluates each predicate **per evaluation unit** (function, catch clause, or trigger call site). Violations are reported at the unit's anchor location.
+Install the rule-extraction skill (Cursor, global):
 
-| Principle | Behavior |
-|-----------|----------|
-| Per-unit evaluation | Each function / catch / trigger is checked independently |
-| `onPath` on predicate | Scope is declared on the predicate itself (not chained afterward) |
-| Empty units (`ifEmpty`) | When no units match `onPath`, `.violate` (default) or `.skip` |
-| Conditional predicates | When no trigger matches, the rule is skipped |
-| Violation location | Anchor of the failing unit (function declaration, `catch`, or trigger call) |
-
-| Predicate | Unit | Default `onPath` |
-|-----------|------|------------------|
-| `MustCall` / `MustCallAnyOf` / `MustDeclare` | Each `FunctionDecl` | `everyFunction(ifEmpty: .violate)` |
-| `MustHandleError` | Each `catch` clause | `everyCatch(ifEmpty: .violate)` |
-| `WhenCalls` + follow-ups | Each trigger call | `sameFunction` |
-| `WhenCalls(name:)` + `MustDeclare` | Each matching type creation | Creation's function (no `onPath`) |
-
-`MustHandleError` detects case mentions from catch patterns, `if case` / `guard case` in the catch body, and `where` clauses comparing against `.caseName`. Unmentioned catch clauses violate by default (`whenUnmentioned: .violate`); use `whenUnmentioned: .skip` to allow generic handlers.
-
-Scope examples:
-
-```swift
-MustCall(receiver: .symbol("Analytics"), method: "sendScreen",
-         onPath: .namedFunctions("load", ifEmpty: .skip))
-
-MustHandleError(target: .case("cancelled"), as: .through,
-                onPath: .everyCatch(ifEmpty: .violate),
-                whenUnmentioned: .violate)
+```bash
+npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y
 ```
+
+Invoke: `/rin-dsl-rule-extraction`
+
+Skill reference: [skills/rin-dsl-rule-extraction/SKILL.md](skills/rin-dsl-rule-extraction/SKILL.md)
 
 ## CLI
 
@@ -249,7 +219,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Download release binary
         env:
-          RINTER_VERSION: "v1.0.0" # pin your desired release tag
+          RINTER_VERSION: "v0.0.9" # pin your desired release tag
         run: |
           curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/rinter_${RINTER_VERSION#v}_darwin_arm64.tar.gz"
           curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/checksums.txt"
@@ -262,21 +232,18 @@ jobs:
 ## How It Works
 
 - Parse `Rinfile.swift` with SwiftSyntax.
-- Collect changed Swift files from git diff.
-- Collect call sites in each file.
-- Evaluate `MustCall`, `MustCallAnyOf`, `MustHandleError`, and `WhenCalls`.
-- Exit non-zero on violations or runtime errors.
+- Collect changed Swift files from git diff (or all files with `--all-files`).
+- Evaluate each rule **per unit** (function, `catch`, or trigger call) using `onPath` scopes.
+- Predicates: `MustCall`, `MustCallAnyOf`, `MustHandleError`, `WhenCalls`, `MustDeclare`, `WhenCalls(name:)`.
+- Exit non-zero on violations or runtime errors (`0` pass, `1` violations, `2` errors).
 
 ## Limitations
 
-- File-local AST evaluation only.
-- Receiver matching is syntax-based (`.symbol("name")` matches base identifier exactly).
-- `.through` is syntax-based for control-flow exits and does not track jump destination semantics for nested loops/blocks.
-- Scope control is path-based (`Target` and `Rule.scope`).
-- Co-occurrence checks do not guarantee call order or 1:1 pairing.
-- Helper delegation (calls moved to private helpers) is not detected.
-- `deinit` and `subscript` are not attached to function scope metadata.
-- `catch is Type` and non-literal `where` conditions are not treated as case mentions.
+- File-local AST evaluation only
+- Receiver matching is syntax-based (`.symbol("name")` matches base identifier exactly)
+- Co-occurrence checks do not guarantee call order or 1:1 pairing
+- Helper delegation (calls moved to private helpers) is not detected
+- `deinit` and `subscript` are not attached to function scope metadata
 
 ## Special Thanks
 
