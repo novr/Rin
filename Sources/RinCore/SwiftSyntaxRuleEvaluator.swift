@@ -51,6 +51,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         let allFunctionIDs = collector.allFunctionIDs
         let functionLocations = collector.functionLocations
         let functionNames = collector.functionNames
+        let functionTypedThrowTypes = collector.functionTypedThrowTypes
 
         var violations: [RinSemanticViolation] = []
         for rule in policy.rules {
@@ -64,6 +65,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                     allFunctionIDs: allFunctionIDs,
                     functionLocations: functionLocations,
                     functionNames: functionNames,
+                    functionTypedThrowTypes: functionTypedThrowTypes,
                     filePath: file.path
                 )
             )
@@ -115,6 +117,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         allFunctionIDs: [Int],
         functionLocations: [Int: (line: Int, column: Int)],
         functionNames: [Int: String],
+        functionTypedThrowTypes: [Int: String?],
         filePath: String
     ) throws -> [RinSemanticViolation] {
         var violations: [RinSemanticViolation] = []
@@ -179,6 +182,22 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                     catchClauses: catchClauses,
                     allFunctionIDs: allFunctionIDs,
                     functionNames: functionNames,
+                    filePath: filePath,
+                    fileAnchor: fileAnchor
+                )
+            )
+        }
+
+        for mustThrow in parsedRuleBody.mustThrowRules {
+            violations.append(
+                contentsOf: evaluateMustThrow(
+                    ruleID: rule.id,
+                    typeName: mustThrow.typeName,
+                    onPath: mustThrow.onPath,
+                    allFunctionIDs: allFunctionIDs,
+                    functionLocations: functionLocations,
+                    functionNames: functionNames,
+                    functionTypedThrowTypes: functionTypedThrowTypes,
                     filePath: filePath,
                     fileAnchor: fileAnchor
                 )
@@ -494,6 +513,45 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         return violations
     }
 
+    private func evaluateMustThrow(
+        ruleID: String,
+        typeName: String,
+        onPath: UnitPathScopeRule,
+        allFunctionIDs: [Int],
+        functionLocations: [Int: (line: Int, column: Int)],
+        functionNames: [Int: String],
+        functionTypedThrowTypes: [Int: String?],
+        filePath: String,
+        fileAnchor: (Int, Int)
+    ) -> [RinSemanticViolation] {
+        let targetFunctionIDs = resolveFunctionUnitIDs(onPath: onPath, allFunctionIDs: allFunctionIDs, functionNames: functionNames)
+        if let violation = emptyUnitViolation(
+            ruleID: ruleID,
+            unitsEmpty: targetFunctionIDs.isEmpty,
+            ifEmpty: onPath.ifEmpty,
+            filePath: filePath,
+            fileAnchor: fileAnchor
+        ) {
+            return [violation]
+        }
+        var violations: [RinSemanticViolation] = []
+        for functionID in targetFunctionIDs {
+            if functionTypedThrowTypes[functionID] != typeName {
+                let location = functionLocations[functionID] ?? fileAnchor
+                violations.append(
+                    RinSemanticViolation(
+                        ruleId: ruleID,
+                        reason: "Required typed throw `\(typeName)` was not found.",
+                        file: filePath,
+                        line: location.0,
+                        column: location.1
+                    )
+                )
+            }
+        }
+        return violations
+    }
+
     private func emptyUnitViolation(
         ruleID: String,
         unitsEmpty: Bool,
@@ -685,6 +743,7 @@ private final class FunctionCallCollector: SyntaxVisitor {
     private(set) var allFunctionIDs: [Int] = []
     private(set) var functionLocations: [Int: (line: Int, column: Int)] = [:]
     private(set) var functionNames: [Int: String] = [:]
+    private(set) var functionTypedThrowTypes: [Int: String?] = [:]
     private(set) var calls: [CallSite] = []
     private(set) var catchClauses: [CatchClauseSite] = []
     private(set) var creations: [TypeCreationSite] = []
@@ -746,10 +805,28 @@ private final class FunctionCallCollector: SyntaxVisitor {
         nextFunctionID += 1
         allFunctionIDs.append(functionID)
         functionNames[functionID] = node.name.text
+        functionTypedThrowTypes[functionID] = Self.literalTypedThrowName(
+            from: node.signature.effectSpecifiers?.throwsClause
+        )
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
         functionLocations[functionID] = (location.line, location.column)
         functionStack.append(functionID)
         return .visitChildren
+    }
+
+    static func literalTypedThrowName(from throwsClause: ThrowsClauseSyntax?) -> String? {
+        guard let type = throwsClause?.type else { return nil }
+        return literalThrownTypeName(from: type)
+    }
+
+    private static func literalThrownTypeName(from type: TypeSyntax) -> String? {
+        if let identifierType = type.as(IdentifierTypeSyntax.self) {
+            return identifierType.name.text
+        }
+        if let memberType = type.as(MemberTypeSyntax.self) {
+            return memberType.name.text
+        }
+        return nil
     }
 
     override func visitPost(_ node: FunctionDeclSyntax) {
@@ -1111,6 +1188,20 @@ private enum RuleBodyParser {
                         onPath: onPath
                     )
                 )
+                continue
+            }
+            if called == "MustThrow" {
+                let onPath = try parseUnitPathScope(
+                    from: callExpr.arguments.first(where: { $0.label?.text == "onPath" })?.expression,
+                    default: defaultFunctionScope
+                )
+                try validateUnitPathScope(onPath, allowed: .function, predicate: "MustThrow")
+                guard let typeExpr = callExpr.arguments.first(where: { $0.label?.text == "type" })?.expression,
+                      let typeName = stringLiteralValue(typeExpr)
+                else {
+                    throw RuleBodyParserError.invalidClause("MustThrow(type: \"...\") requires a string literal")
+                }
+                parsed.mustThrowRules.append(MustThrowRule(typeName: typeName, onPath: onPath))
                 continue
             }
             if called == "mustNotUse" || called == "mustUse" || called == "inArgument" || called == "WhenCreates" {
@@ -1586,6 +1677,7 @@ private struct ParsedRuleBody {
     var whenCallsConditions: [WhenCallsCondition] = []
     var mustHandleErrorRules: [MustHandleErrorRule] = []
     var mustDeclareRules: [MustDeclareRule] = []
+    var mustThrowRules: [MustThrowRule] = []
     var whenCallsNameChecks: [WhenCallsNameRule] = []
 }
 
@@ -1601,6 +1693,11 @@ private struct MustCallAnyOfRule {
 
 private struct MustDeclareRule {
     let binding: LocalBindingRule
+    let onPath: UnitPathScopeRule
+}
+
+private struct MustThrowRule {
+    let typeName: String
     let onPath: UnitPathScopeRule
 }
 

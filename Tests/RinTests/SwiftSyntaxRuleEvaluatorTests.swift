@@ -1419,3 +1419,150 @@ import Testing
     #expect(catches.count == 1)
     #expect(catches[0].handledCases.contains("cancelled"))
 }
+
+@Test func semanticEngineMustThrowPassesForLiteralTypedThrows() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "must-throw-app-error",
+            body: #"MustThrow(type: "AppError", onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip))"#,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in
+            [DiffedSwiftFile(path: "Sources/App.swift", source: """
+            func run() async throws(AppError) { try await work() }
+            """)]
+        }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustThrowFailsForUntypedThrows() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "must-throw-app-error",
+            body: #"MustThrow(type: "AppError")"#,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in
+            [DiffedSwiftFile(path: "Sources/App.swift", source: """
+            func run() throws { try work() }
+            """)]
+        }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected typed throw violation")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("AppError"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustThrowMatchesQualifiedThrownTypeName() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "must-throw-app-error",
+            body: #"MustThrow(type: "AppError")"#,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in
+            [DiffedSwiftFile(path: "Sources/App.swift", source: """
+            func run() throws(Module.AppError) { try work() }
+            """)]
+        }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineMustThrowFailsWhenFunctionHasNoThrows() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "must-throw-app-error", body: #"MustThrow(type: "AppError")"#, message: nil, severity: .error)
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() { work() }")] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected typed throw violation")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustThrowFailsForWrongThrownType() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "must-throw-app-error", body: #"MustThrow(type: "AppError")"#, message: nil, severity: .error)
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() throws(NetworkError) { try work() }")] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected typed throw violation")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineMustThrowSkipsWhenNamedFunctionMissing() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "must-throw-app-error",
+            body: #"MustThrow(type: "AppError", onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip))"#,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func load() throws(AppError) { }")] }
+    )
+
+    try await engine.check()
+}

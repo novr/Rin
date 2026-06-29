@@ -130,6 +130,23 @@ import Testing
     #expect(policy.rules[0].body.contains(".inArgument(argumentLabel: \"performer\")"))
 }
 
+@Test func rinfileDecoderRoundTripsMustThrow() throws {
+    let source = #"""
+    let policy = Rin.Policy {
+        Rules {
+            Rule(id: "api_throws_app_error") {
+                MustThrow(type: "AppError", onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip))
+            }
+        }
+    }
+    """#
+
+    let policy = try RinfileSyntaxDecoder().decode(source: source)
+    let body = policy.rules[0].body
+    #expect(body.contains(#"MustThrow(type: "AppError""#))
+    #expect(body.contains(#"onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip)"#))
+}
+
 @Test func rinfileDecoderRoundTripsOnPathAndMustAlsoCallAnyOf() throws {
     let source = #"""
     let policy = Rin.Policy {

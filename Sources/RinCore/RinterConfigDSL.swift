@@ -508,6 +508,10 @@ func MustDeclare(_ constraint: DeclarationConstraint, onPath: UnitPathScope = .e
     RuleClause("MustDeclare(\(constraint.rendered), onPath: \(onPath.rendered))")
 }
 
+func MustThrow(type: String, onPath: UnitPathScope = .everyFunction()) -> RuleClause {
+    RuleClause("MustThrow(type: \"\(type)\", onPath: \(onPath.rendered))")
+}
+
 func WhenCalls(name: TypeNamePattern) -> WhenCallsNameClause {
     WhenCallsNameClause(
         rendered: "WhenCalls(name: \(name.rendered))"

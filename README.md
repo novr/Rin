@@ -157,6 +157,21 @@ Rule(id: "store_catch_cancellation") {
 
 `.through` requires the target case branch to exit via `return`, `break`, or `continue` (not `guard case … else { return }` on the non-target side).
 
+## Typed Throws
+
+Literal typed-throws type name only (e.g. `throws(AppError)` in source):
+
+```swift
+Rule(id: "api_run_throws_app_error") {
+    MustThrow(type: "AppError", onPath: .namedFunctions("run", ifEmpty: .skip))
+}
+.scope(include: ["**/API/**/*.swift"])
+.message("API run() must declare throws(AppError).")
+.severity(.error)
+```
+
+Untyped `throws`, `throws(any Error)`, and `typealias`-dependent types are not matched.
+
 ## Paired Calls
 
 ```swift
@@ -234,7 +249,7 @@ jobs:
 - Parse `Rinfile.swift` with SwiftSyntax.
 - Collect changed Swift files from git diff (or all files with `--all-files`).
 - Evaluate each rule **per unit** (function, `catch`, or trigger call) using `onPath` scopes.
-- Predicates: `MustCall`, `MustCallAnyOf`, `MustHandleError`, `WhenCalls`, `MustDeclare`, `WhenCalls(name:)`.
+- Predicates: `MustCall`, `MustCallAnyOf`, `MustHandleError`, `WhenCalls`, `MustDeclare`, `MustThrow`, `WhenCalls(name:)`.
 - Exit non-zero on violations or runtime errors (`0` pass, `1` violations, `2` errors).
 
 ## Limitations
