@@ -30,9 +30,15 @@
 - AST で構造的に実装できないルールは導入しない。
 
 ## ドキュメント
-- 正本: `README.md`（利用例）、`skills/rin-dsl-rule-extraction/SKILL.md`（ルール抽出）、`Sources/RinCore/RinterConfigDSL.swift`（DSL API）。
-- skill 配布: `npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y`（invoke: `/rin-dsl-rule-extraction`）。
-- DSL デコードまたは evaluator 意味論を変えたら、デコード/evaluator **両方のテスト**と **README の例**・**SKILL.md** を同期する。
+- 正本: `README.md`（利用例・要約）、`skills/rin-dsl-rinfile/SKILL.md`（DSL 執筆・意味論）、`skills/rin-dsl-rule-extraction/SKILL.md`（ルール抽出）、`Sources/RinCore/RinterConfigDSL.swift`（DSL API）。
+- skill 配布（1 skill あたり 1 コマンド）:
+  ```bash
+  npx skills add novr/Rin -s rin-dsl-rinfile -g -a cursor -y
+  npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y
+  ```
+  - `rin-dsl-rinfile`: Rinfile 執筆時に自動参照
+  - `rin-dsl-rule-extraction`: invoke `/rin-dsl-rule-extraction`
+- DSL デコードまたは evaluator 意味論を変えたら、デコード/evaluator **両方のテスト**と **README の例/要約**・**両 SKILL** を同期する。
 
 ## GIT
 - 変更は最小・意図保存で行い、大きな無関係リファクタは避ける。

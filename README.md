@@ -193,15 +193,20 @@ By default, `WhenCalls` checks follow-ups in the **same function** as the trigge
 
 ## Adopting to an existing project
 
-Install the rule-extraction skill (Cursor, global):
+Install both skills (Cursor, global). Run **one command per skill** (do not combine multiple `-s` flags):
 
 ```bash
+npx skills add novr/Rin -s rin-dsl-rinfile -g -a cursor -y
 npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y
 ```
 
-Invoke: `/rin-dsl-rule-extraction`
+- `rin-dsl-rinfile`: applied automatically when writing or editing `Rinfile.swift`
+- Invoke rule extraction: `/rin-dsl-rule-extraction`
 
-Skill reference: [skills/rin-dsl-rule-extraction/SKILL.md](skills/rin-dsl-rule-extraction/SKILL.md)
+Skill references:
+
+- [skills/rin-dsl-rinfile/SKILL.md](skills/rin-dsl-rinfile/SKILL.md) — DSL semantics and Rinfile authoring
+- [skills/rin-dsl-rule-extraction/SKILL.md](skills/rin-dsl-rule-extraction/SKILL.md) — project rule extraction
 
 ## CLI
 
@@ -261,6 +266,8 @@ jobs:
 - Co-occurrence checks do not guarantee call order or 1:1 pairing
 - Helper delegation (calls moved to private helpers) is not detected
 - `deinit` and `subscript` are not attached to function scope metadata
+
+Details: [skills/rin-dsl-rinfile/SKILL.md](skills/rin-dsl-rinfile/SKILL.md#limitations)
 
 ## Special Thanks
 

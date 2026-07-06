@@ -6,87 +6,46 @@ disable-model-invocation: true
 
 # Rin DSL Rule Extraction
 
+> DSL reference and semantics moved to `rin-dsl-rinfile`. Install both skills for extraction.
+
 Extract **project-specific** rules expressible by the current Rin DSL. Prefer conventions found in the target codebase. Do not invent predicates that do not exist.
 
 Invoke only via `/rin-dsl-rule-extraction` or `@rin-dsl-rule-extraction`.
 
-Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENTS.md). DSL API: [RinterConfigDSL.swift](https://github.com/novr/Rin/blob/main/Sources/RinCore/RinterConfigDSL.swift).
+Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENTS.md).
 
-## `Rule.scope` vs `onPath`
+## Prerequisites (required)
 
-| Layer | Use | Example |
-|-------|-----|---------|
-| Files | `Target`, `Rule.scope` | `**/*ViewModel.swift` |
-| Functions / catch in file | `onPath` on predicate | `.namedFunctions("load", ifEmpty: .skip)` |
-| Function name pattern | `onPath: .matchingFunctions(...)` | `.suffix("ViewModel")` — **not** file suffix |
+1. **Apply `rin-dsl-rinfile` semantics** at start (`@rin-dsl-rinfile` or read [rin-dsl-rinfile/SKILL.md](https://github.com/novr/Rin/blob/main/skills/rin-dsl-rinfile/SKILL.md)).
+2. If not installed, recommend both (one command per skill):
 
-`onPath` is declared on the predicate itself, not chained afterward.
+```bash
+npx skills add novr/Rin -s rin-dsl-rinfile -g -a cursor -y
+npx skills add novr/Rin -s rin-dsl-rule-extraction -g -a cursor -y
+```
 
-`matchingFunctions(.suffix("ViewModel"))` does **not** mean `*ViewModel.swift` files.
-
-## Evaluation model
-
-| Predicate | Unit | Default `onPath` |
-|-----------|------|------------------|
-| `MustCall` / `MustCallAnyOf` / `MustDeclare` / `MustThrow` | Each `FunctionDecl` | `everyFunction(ifEmpty: .violate)` |
-| `MustHandleError` | Each `catch` | `everyCatch(ifEmpty: .violate)` |
-| `WhenCalls` + follow-ups | Each trigger | `sameFunction` |
-| `WhenCalls(name:)` | Each matching creation | creation's function |
-
-`onPath` variants: `everyFunction`, `namedFunctions`, `matchingFunctions`, `everyCatch`, `namedFunctionCatches`; follow-ups: `sameFunction` (default) or `entireFile`.
-
-- `.mustAlsoCall` = AND; `.mustAlsoCallAnyOf` = OR (commit/rollback)
-- `MustHandleError`: `.through` requires target branch to exit via `return` / `break` / `continue`
-- Receiver: `Analytics.foo()` → `.symbol("Analytics")`; `deps.analytics.foo()` → `needs_code_convention_change`
-
-### Limitations
-
-- File-local AST only; syntax-based receiver matching
-- No call order / 1:1 pairing guarantee; helper delegation not detected
-- `deinit` / `subscript` excluded from function scope metadata
-- No import rules, access control, cross-file resolution, or type inference / `typealias`
+3. Map conventions using the **pattern catalog** in `rin-dsl-rinfile`.
 
 ## Extraction defaults
 
-1. Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over `everyFunction`.
-2. Narrow `Rule.scope` before widening `onPath`.
-3. Use `everyFunction` only when evidence shows **all** functions in scoped files must comply.
+Follow [rin-dsl-rinfile authoring defaults](https://github.com/novr/Rin/blob/main/skills/rin-dsl-rinfile/SKILL.md#authoring-defaults). Additionally:
+
 4. Each candidate needs path + line or function name; prefer 2+ files or a doc citation.
 5. Tune after `rinter_validation`.
+
+Put rules that need receiver refactors (e.g. `deps.analytics.foo()` instead of `Analytics.foo()`) in `needs_code_convention_change`, not `applicable_rules`. See [rin-dsl-rinfile evaluation model](https://github.com/novr/Rin/blob/main/skills/rin-dsl-rinfile/SKILL.md#evaluation-model).
 
 ## Workflow
 
 ```
 Task Progress:
+- [ ] Apply rin-dsl-rinfile semantics
 - [ ] Resolve PROJECT_ROOT
 - [ ] Omnidirectional survey (layout, naming, entry points, catch handling, existing Rinfile.swift)
-- [ ] Map conventions → Rule.scope (files) + onPath (units)
+- [ ] Map conventions → Rule.scope (files) + onPath (units) via rin-dsl-rinfile catalog
 - [ ] Emit draft_rinfile with project-specific identifiers
 - [ ] Run rinter validation (mandatory)
 - [ ] Report tuning (scope, ifEmpty, rule splits)
-```
-
-## Pattern catalog
-
-| Pattern | `Rule.scope` | `onPath` / shape |
-|---------|--------------|------------------|
-| `load()` must call analytics | files containing the type | `UnitPathScope.namedFunctions("load", ifEmpty: .skip)` |
-| Transaction close | DB-related files | `mustAlsoCallAnyOf([commit, rollback])` |
-| Typed throws | API layer files | `MustThrow(type: "AppError", onPath: UnitPathScope.namedFunctions("run", ifEmpty: .skip))` |
-| Cross-function cleanup | relevant files | `onPath: .entireFile` on `WhenCalls` |
-
-### `MustDeclare` + `WhenCalls(name:)`
-
-```swift
-MustDeclare(.local(binding: LocalBindingConstraint(
-    identifier: "performer",
-    typePattern: .anyConformance("ActionPerformer"),
-    initializerIdentifier: "store"
-)), onPath: UnitPathScope.namedFunctions("makeWitness", ifEmpty: .skip))
-WhenCalls(name: .suffix("Witness"))
-    .inArgument(argumentLabel: "performer")
-    .mustUse(identifier: "performer")
-    .mustNotUse(identifier: "store")
 ```
 
 ## Project-path prompt
@@ -98,22 +57,12 @@ Replace `<<<PROJECT_ROOT>>>`.
 
 Survey the project and extract **project-specific** rule candidates verifiable by the **current Rin (Rinter) DSL**.
 
+Apply [rin-dsl-rinfile](https://github.com/novr/Rin/blob/main/skills/rin-dsl-rinfile/SKILL.md) semantics before mapping.
+
 ## Target project
 
 - PROJECT_ROOT: `<<<PROJECT_ROOT>>>`
 - Depth: `quick` | `standard` (default) | `thorough`
-
-## Current DSL
-
-- `MustCall(receiver:method:, onPath:)` — per function (default `everyFunction`)
-- `MustCallAnyOf([...], onPath:)` — per function
-- `WhenCalls(receiver:method:, onPath: .sameFunction|.entireFile).mustAlsoCall(...)` — AND
-- `WhenCalls(...).mustAlsoCallAnyOf([...])` — OR
-- `MustHandleError(target:, as:, onPath:, whenUnmentioned:)` — per catch
-- `MustDeclare(..., onPath:)` — per function
-- `MustThrow(type:, onPath:)` — per function; **literal** typed-throws type name only (e.g. `throws(AppError)`)
-- `WhenCalls(name:).inArgument(...).mustUse(...).mustNotUse(...)` — per matching creation
-- `Target` / `Rule.scope` — **file** globs only
 
 ## Scope split (required)
 
@@ -121,9 +70,13 @@ Survey the project and extract **project-specific** rule candidates verifiable b
 - **Functions / catch inside files** → `onPath` on predicate
 - `matchingFunctions` matches **function names**, not file names
 
+## Predicates (summary)
+
+`MustCall`, `MustCallAnyOf`, `WhenCalls` (+ `mustAlsoCall` / `mustAlsoCallAnyOf`), `MustHandleError`, `MustDeclare`, `MustThrow`, `WhenCalls(name:)`. Details: rin-dsl-rinfile.
+
 ## Extraction defaults
 
-Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over bare `everyFunction`.
+Follow rin-dsl-rinfile authoring defaults. Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over bare `everyFunction`.
 
 ## Evidence rules
 
@@ -132,7 +85,7 @@ Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over bare `e
 
 ## Output
 
-`project_summary`, `applicable_rules` (with `verification_sample` OK/NG), `needs_code_convention_change`, `out_of_scope`, `draft_rinfile`, `rinter_validation`.
+`project_summary`, `applicable_rules` (with `verification_sample` OK/NG), `needs_code_convention_change` (receiver/call-site refactors per rin-dsl-rinfile), `out_of_scope`, `draft_rinfile`, `rinter_validation`.
 
 **Not supported (`out_of_scope`):** import rules, access control, SwiftUI-specific, cross-file resolution, type inference / `typealias`, untyped `throws`, `throws(any Error)`, return/parameter type signatures, call order / 1:1 pairing, helper delegation.
 
@@ -146,13 +99,7 @@ Prefer `namedFunctions` / `matchingFunctions` with `ifEmpty: .skip` over bare `e
 
 ## Manual-input prompt
 
-| Convention wording | Suggested `onPath` |
-|--------------------|-------------------|
-| "`load()` must …" | `.namedFunctions("load", ifEmpty: .skip)` |
-| "every function in …" | `.everyFunction()` + narrow `Rule.scope` |
-| "in `catch` …" | `.everyCatch()` or `.namedFunctionCatches(...)` |
-| "when calling X, must also Y" | `WhenCalls` + `mustAlsoCall` / `mustAlsoCallAnyOf` |
-| "files named *Foo.swift" | `Rule.scope`, not `matchingFunctions` |
+Accept convention descriptions from the user. Map `onPath` using [rin-dsl-rinfile convention table](https://github.com/novr/Rin/blob/main/skills/rin-dsl-rinfile/SKILL.md#convention--onpath).
 
 Same output sections as project-path mode.
 
@@ -170,6 +117,7 @@ Exit codes: `0` pass, `1` violations, `2` errors. Do not finish without validati
 
 ## Quality checklist
 
+- [ ] `rin-dsl-rinfile` semantics applied
 - [ ] `Rule.scope` vs `onPath` correct
 - [ ] Narrow `onPath` preferred
 - [ ] Evidence on every candidate
