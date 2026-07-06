@@ -12,7 +12,7 @@ It reads `Rinfile.swift`, evaluates changed Swift code with deterministic SwiftS
 
 ### Requirements
 
-- macOS 13 or later
+- macOS 13 or later (Apple Silicon and Intel)
 
 ### Homebrew (tap)
 
@@ -24,11 +24,13 @@ brew install novr/taps/rinter
 
 ### Release tar.gz
 
+Universal binary (Apple Silicon and Intel):
+
 ```bash
-curl -LO https://github.com/novr/Rin/releases/download/v<version>/rinter_<version>_darwin_arm64.tar.gz
+curl -LO https://github.com/novr/Rin/releases/download/v<version>/rinter_<version>_darwin.tar.gz
 curl -LO https://github.com/novr/Rin/releases/download/v<version>/checksums.txt
 shasum -a 256 -c checksums.txt
-tar -xzf rinter_<version>_darwin_arm64.tar.gz
+tar -xzf rinter_<version>_darwin.tar.gz
 ./rinter --help
 ```
 
@@ -236,10 +238,10 @@ jobs:
         env:
           RINTER_VERSION: "v0.0.9" # pin your desired release tag
         run: |
-          curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/rinter_${RINTER_VERSION#v}_darwin_arm64.tar.gz"
+          curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/rinter_${RINTER_VERSION#v}_darwin.tar.gz"
           curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/checksums.txt"
           shasum -a 256 -c checksums.txt
-          tar -xzf "rinter_${RINTER_VERSION#v}_darwin_arm64.tar.gz"
+          tar -xzf "rinter_${RINTER_VERSION#v}_darwin.tar.gz"
           chmod +x ./rinter
       - run: ./rinter --config Rinfile.swift
 ```

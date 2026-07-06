@@ -45,9 +45,8 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
-          ARCH="$(uname -m)"
           OS="darwin"
-          ASSET_NAME="rinter_${VERSION}_${OS}_${ARCH}.tar.gz"
+          ASSET_NAME="rinter_${VERSION}_${OS}.tar.gz"
           if [[ "${VERSION}" == *"-rc."* || "${VERSION}" == *"-test."* ]]; then
             PRERELEASE="true"
           else
@@ -70,12 +69,13 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            .build
+            .build/arm64
+            .build/x86_64
             ~/.swiftpm
-          key: ${{ runner.os }}-spm-${{ steps.swift-version.outputs.value }}-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-universal-${{ steps.swift-version.outputs.value }}-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-${{ steps.swift-version.outputs.value }}-
-            ${{ runner.os }}-spm-
+            ${{ runner.os }}-spm-universal-${{ steps.swift-version.outputs.value }}-
+            ${{ runner.os }}-spm-universal-
 
       - name: Embed release version from tag
         shell: bash
@@ -87,16 +87,29 @@ jobs:
           }
           EOF
 
-      - name: Build release binary
-        run: swift build -c release
+      - name: Build universal release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build -c release --triple arm64-apple-macosx --build-path .build/arm64
+          swift build -c release --triple x86_64-apple-macosx --build-path .build/x86_64
+          mkdir -p dist
+          lipo -create -output dist/rinter .build/arm64/release/rinter .build/x86_64/release/rinter
+          lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*arm64'
+          lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*x86_64'
+          for ARCH in arm64 x86_64; do
+            MINOS="$(otool -arch "${ARCH}" -l dist/rinter | awk '/LC_BUILD_VERSION/{f=1} f && /^[[:space:]]*minos /{print $2; exit}')"
+            if [[ "${MINOS}" != "13.0" ]]; then
+              echo "Expected minos 13.0 for ${ARCH}, got ${MINOS}"
+              exit 1
+            fi
+          done
 
       - name: Package release asset
         id: package
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cp ./.build/release/rinter ./dist/rinter
           tar -C dist -czf "${{ steps.meta.outputs.asset }}" rinter
           SHA256="$(shasum -a 256 "${{ steps.meta.outputs.asset }}" | cut -d' ' -f1)"
           echo "${SHA256}  ${{ steps.meta.outputs.asset }}" > checksums.txt
@@ -120,6 +133,11 @@ jobs:
           TITLE="${TAG}"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            LEGACY_ASSET="rinter_${{ steps.meta.outputs.version }}_darwin_arm64.tar.gz"
+            LEGACY_ID="$(gh release view "${TAG}" --json assets -q ".assets[] | select(.name == \"${LEGACY_ASSET}\") | .id" || true)"
+            if [[ -n "${LEGACY_ID}" ]]; then
+              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/${LEGACY_ID}"
+            fi
             gh release upload "${TAG}" \
               "${{ steps.meta.outputs.asset }}" \
               checksums.txt \
