@@ -181,8 +181,13 @@ jobs:
             "client_payload": {
               "formula": "rinter",
               "version": "${{ steps.meta.outputs.version }}",
-              "url": "https://github.com/novr/Rin/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset }}",
-              "sha256": "${{ steps.package.outputs.sha256 }}"
+              "url": "https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset }}",
+              "sha256": "${{ steps.package.outputs.sha256 }}",
+              "source_repo": "${{ github.repository }}",
+              "desc": "Run semantic policy checks from Rinfile.swift",
+              "homepage": "https://github.com/${{ github.repository }}",
+              "binary": "rinter",
+              "test_match": "USAGE: rinter"
             }
           }
           EOF

@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Download release binary
         env:
-          RINTER_VERSION: "v0.0.9" # pin your desired release tag
+          RINTER_VERSION: "v0.0.9"
         run: |
           curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/rinter_${RINTER_VERSION#v}_darwin.tar.gz"
           curl -LO "https://github.com/novr/Rin/releases/download/${RINTER_VERSION}/checksums.txt"
