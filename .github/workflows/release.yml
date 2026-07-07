@@ -17,6 +17,10 @@ permissions:
 jobs:
   release-macos:
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      url: ${{ steps.package.outputs.url }}
+      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -113,7 +117,10 @@ jobs:
           tar -C dist -czf "${{ steps.meta.outputs.asset }}" rinter
           SHA256="$(shasum -a 256 "${{ steps.meta.outputs.asset }}" | cut -d' ' -f1)"
           echo "${SHA256}  ${{ steps.meta.outputs.asset }}" > checksums.txt
-          echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "sha256=${SHA256}"
+            echo "url=https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset }}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -158,36 +165,18 @@ jobs:
               ${PRERELEASE_FLAG}
           fi
 
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ secrets.NOVRD_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.NOVRD_BOT_KEY }}
-          owner: novr
-          repositories: homebrew-taps
-
-      - name: Dispatch homebrew formula update
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api repos/novr/homebrew-taps/dispatches \
-            --method POST \
-            --input - <<EOF
-          {
-            "event_type": "update-formula",
-            "client_payload": {
-              "formula": "rinter",
-              "version": "${{ steps.meta.outputs.version }}",
-              "url": "https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset }}",
-              "sha256": "${{ steps.package.outputs.sha256 }}",
-              "source_repo": "${{ github.repository }}",
-              "desc": "Run semantic policy checks from Rinfile.swift",
-              "homepage": "https://github.com/${{ github.repository }}",
-              "binary": "rinter",
-              "test_match": "USAGE: rinter"
-            }
-          }
-          EOF
+  dispatch-formula:
+    needs: release-macos
+    uses: novr/homebrew-taps/.github/workflows/dispatch-formula.yml@03167f7bb20a18f2c4692e5b90e5194940ce13fb
+    with:
+      formula: rinter
+      version: ${{ needs.release-macos.outputs.version }}
+      url: ${{ needs.release-macos.outputs.url }}
+      sha256: ${{ needs.release-macos.outputs.sha256 }}
+      desc: "Run semantic policy checks from Rinfile.swift"
+      binary: rinter
+      test_match: "USAGE: rinter"
+      source_repo: ${{ github.repository }}
+    secrets:
+      NOVRD_BOT_CLIENT_ID: ${{ secrets.NOVRD_BOT_CLIENT_ID }}
+      NOVRD_BOT_KEY: ${{ secrets.NOVRD_BOT_KEY }}
