@@ -176,6 +176,7 @@ jobs:
       desc: "Run semantic policy checks from Rinfile.swift"
       binary: rinter
       test_match: "USAGE: rinter"
+      source_repo: ${{ github.repository }}
     secrets:
       NOVRD_BOT_CLIENT_ID: ${{ secrets.NOVRD_BOT_CLIENT_ID }}
       NOVRD_BOT_KEY: ${{ secrets.NOVRD_BOT_KEY }}
