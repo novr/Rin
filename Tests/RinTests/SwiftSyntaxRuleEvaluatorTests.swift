@@ -695,6 +695,153 @@ import Testing
     try await engine.check()
 }
 
+@Test func semanticEngineWhenCallsNameMustUseOnlyPasses() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(performer: Any) -> ProductStoreWitness {
+            return ProductStoreWitness(performer: performer)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
+@Test func semanticEngineWhenCallsNameMustUseOnlyFailsForWrongIdentifier() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(store: Any) -> ProductStoreWitness {
+            return ProductStoreWitness(performer: store)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation for mustUse-only wrong identifier")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("must use identifier"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineWhenCallsNameReportsMustUseWhenIdentifierIsNeither() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(logger: Any) -> ProductStoreWitness {
+            return ProductStoreWitness(performer: logger)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation when identifier matches neither mustUse nor mustNotUse")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("must use identifier"))
+            #expect(!violations[0].reason.contains("must not use identifier"))
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineWhenCreatesMustUseOnlyPasses() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCreates(typeNamePattern: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustUse(identifier: "performer")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    struct ProductStore {
+        func makeStoreWitness(performer: Any) -> ProductStoreWitness {
+            return ProductStoreWitness(performer: performer)
+        }
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    try await engine.check()
+}
+
 @Test func semanticEngineWhenCallsNameWithMustDeclarePassesForPerformerBinding() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
         RinRule(

@@ -108,6 +108,26 @@ import Testing
     #expect(policy.rules[0].body.contains(#"MustHandleError(target: .case("cancelled"), as: .through)"#))
 }
 
+@Test func rinfileDecoderParsesWhenCallsNameMustUseOnlyClause() throws {
+    let source = #"""
+    let policy = Rin.Policy {
+        Rules {
+            Rule(id: "use_shared_logger") {
+                WhenCalls(name: .suffix("Repository"))
+                    .inArgument(argumentLabel: "logger")
+                    .mustUse(identifier: "sharedLogger")
+            }
+        }
+    }
+    """#
+
+    let policy = try RinfileSyntaxDecoder().decode(source: source)
+    #expect(policy.rules.count == 1)
+    #expect(policy.rules[0].body.contains("WhenCalls(name: .suffix(\"Repository\"))"))
+    #expect(policy.rules[0].body.contains(".mustUse(identifier: \"sharedLogger\")"))
+    #expect(!policy.rules[0].body.contains("mustNotUse"))
+}
+
 @Test func rinfileDecoderParsesMustDeclareAndWhenCallsNameClauses() throws {
     let source = #"""
     let policy = Rin.Policy {
