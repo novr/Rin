@@ -149,10 +149,14 @@ jobs:
           TITLE="${TAG}"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
-              gh release edit "${TAG}" --prerelease
-            else
-              gh release edit "${TAG}" --prerelease=false
+            CURRENT_PRERELEASE="$(gh release view "${TAG}" --json isPrerelease -q .isPrerelease)"
+            DESIRED_PRERELEASE="${{ steps.meta.outputs.prerelease }}"
+            if [[ "${CURRENT_PRERELEASE}" != "${DESIRED_PRERELEASE}" ]]; then
+              if [[ "${DESIRED_PRERELEASE}" == "true" ]]; then
+                gh release edit "${TAG}" --prerelease
+              else
+                gh release edit "${TAG}" --prerelease=false
+              fi
             fi
             LEGACY_ASSET="rinter_${{ steps.meta.outputs.version }}_darwin_arm64.tar.gz"
             LEGACY_ID="$(gh release view "${TAG}" --json assets -q ".assets[] | select(.name == \"${LEGACY_ASSET}\") | .id" || true)"

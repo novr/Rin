@@ -1010,6 +1010,42 @@ import Testing
     }
 }
 
+@Test func semanticEngineRejectsWhenCallsNameMustNotUseOnly() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(
+            id: "store-witness-performer",
+            body: """
+            WhenCalls(name: .suffix("StoreWitness")).inArgument(argumentLabel: "performer").mustNotUse(identifier: "store")
+            """,
+            message: nil,
+            severity: .error
+        )
+    ])
+    let source = """
+    struct ProductStoreWitness {
+        init(performer: Any) {}
+    }
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/ProductStore.swift", source: source)] }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected invalid rule body for mustNotUse-only chain")
+    } catch let error as SwiftSyntaxRuleEvaluatorError {
+        switch error {
+        case .invalidRuleBody(_, let reason):
+            #expect(reason.contains("mustUse(identifier:)"))
+        default:
+            Issue.record("Unexpected evaluator error: \(error)")
+        }
+    }
+}
+
 @Test func semanticEngineRejectsWhenCallsNameRuleWithConflictingIdentifiers() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
         RinRule(

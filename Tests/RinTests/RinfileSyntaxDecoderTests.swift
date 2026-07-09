@@ -128,6 +128,41 @@ import Testing
     #expect(!policy.rules[0].body.contains("mustNotUse"))
 }
 
+@Test func semanticEngineEvaluatesDecodedWhenCallsNameMustUseOnlyRule() async throws {
+    let source = #"""
+    let policy = Rin.Policy {
+        Rules {
+            Rule(id: "use_shared_logger") {
+                WhenCalls(name: .suffix("Repository"))
+                    .inArgument(argumentLabel: "logger")
+                    .mustUse(identifier: "sharedLogger")
+            }
+        }
+    }
+    """#
+
+    let policy = try RinfileSyntaxDecoder().decode(source: source)
+    let swiftSource = """
+    struct UserRepository {
+        init(logger: Any) {}
+    }
+    struct Factory {
+        func make() -> UserRepository {
+            return UserRepository(logger: sharedLogger)
+        }
+    }
+    let sharedLogger = 0
+    """
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/Factory.swift", source: swiftSource)] }
+    )
+
+    try await engine.check()
+}
+
 @Test func rinfileDecoderParsesMustDeclareAndWhenCallsNameClauses() throws {
     let source = #"""
     let policy = Rin.Policy {
