@@ -766,8 +766,8 @@ import Testing
     } catch let error as RinterSemanticEngineError {
         switch error {
         case .violations(let violations):
-            #expect(violations.count == 2)
-            #expect(violations[0].reason.contains("must use identifier"))
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("must not use identifier"))
         default:
             Issue.record("Unexpected error: \(error)")
         }
@@ -855,7 +855,8 @@ import Testing
     } catch let error as RinterSemanticEngineError {
         switch error {
         case .violations(let violations):
-            #expect(violations.count == 2)
+            #expect(violations.count == 1)
+            #expect(violations[0].reason.contains("must not use identifier"))
         default:
             Issue.record("Unexpected error: \(error)")
         }

@@ -252,22 +252,21 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
                         continue
                     }
 
-                    if identifier != nameCheck.mustUseIdentifier {
+                    if let mustNotUse = nameCheck.mustNotUseIdentifier, identifier == mustNotUse {
                         violations.append(
                             RinSemanticViolation(
                                 ruleId: rule.id,
-                                reason: "Argument `\(nameCheck.argumentLabel)` must use identifier `\(nameCheck.mustUseIdentifier)`.",
+                                reason: "Argument `\(nameCheck.argumentLabel)` must not use identifier `\(mustNotUse)`.",
                                 file: filePath,
                                 line: creation.line,
                                 column: creation.column
                             )
                         )
-                    }
-                    if identifier == nameCheck.mustNotUseIdentifier {
+                    } else if identifier != nameCheck.mustUseIdentifier {
                         violations.append(
                             RinSemanticViolation(
                                 ruleId: rule.id,
-                                reason: "Argument `\(nameCheck.argumentLabel)` must not use identifier `\(nameCheck.mustNotUseIdentifier)`.",
+                                reason: "Argument `\(nameCheck.argumentLabel)` must use identifier `\(nameCheck.mustUseIdentifier)`.",
                                 file: filePath,
                                 line: creation.line,
                                 column: creation.column
@@ -1445,14 +1444,13 @@ private enum RuleBodyParser {
 
         guard let namePattern,
               let argumentLabel,
-              let mustUseIdentifier,
-              let mustNotUseIdentifier
+              let mustUseIdentifier
         else {
             throw RuleBodyParserError.invalidClause(
-                "WhenCalls(name:) chain requires name, inArgument(argumentLabel:), mustUse(identifier:), and mustNotUse(identifier:)"
+                "WhenCalls(name:) chain requires name, inArgument(argumentLabel:), and mustUse(identifier:)"
             )
         }
-        if mustUseIdentifier == mustNotUseIdentifier {
+        if let mustNotUseIdentifier, mustUseIdentifier == mustNotUseIdentifier {
             throw RuleBodyParserError.invalidClause("mustUse and mustNotUse cannot reference the same identifier")
         }
         return WhenCallsNameRule(
@@ -1768,7 +1766,7 @@ private struct WhenCallsNameRule {
     let namePattern: TypeNamePatternRule
     let argumentLabel: String
     let mustUseIdentifier: String
-    let mustNotUseIdentifier: String
+    let mustNotUseIdentifier: String?
 }
 
 struct CollectedCallSite {

@@ -35,10 +35,12 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
+            TAG="${INPUT_TAG}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -51,7 +53,7 @@ jobs:
           VERSION="${TAG#v}"
           OS="darwin"
           ASSET_NAME="rinter_${VERSION}_${OS}.tar.gz"
-          if [[ "${VERSION}" == *"-rc."* || "${VERSION}" == *"-test."* ]]; then
+          if [[ "${VERSION}" == *-* ]]; then
             PRERELEASE="true"
           else
             PRERELEASE="false"
