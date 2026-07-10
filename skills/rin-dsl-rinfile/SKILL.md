@@ -18,8 +18,8 @@ Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENT
 - `MustHandleError(target:, as:, onPath:, whenUnmentioned:)` — per catch
 - `MustDeclare(..., onPath:)` — per function
 - `MustThrow(type:, onPath:)` — per function; **literal** typed-throws type name only (e.g. `throws(AppError)`)
-- `WhenCalls(name:).inArgument(...).mustUse(...).mustNotUse(...)` — per matching creation
-- `Target` / `Rule.scope` — **file** globs only
+- `WhenCalls(name:).inArgument(...).mustUse(...)` — per matching creation; `.mustNotUse(...)` is optional but `mustUse` is required (`.mustNotUse`-only chains are rejected)
+- `Target` / `Rule.scope` — **file** globs only (`*`, `**`, `?`; `?` matches one path segment character)
 
 ## `Rule.scope` vs `onPath`
 
@@ -84,6 +84,8 @@ WhenCalls(name: .suffix("Witness"))
     .mustUse(identifier: "performer")
     .mustNotUse(identifier: "store")
 ```
+
+When both `mustUse` and `mustNotUse` are set, a violating argument reports **one** violation; `mustNotUse` takes precedence when the identifier matches the forbidden name.
 
 ## Convention → `onPath`
 

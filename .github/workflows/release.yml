@@ -21,6 +21,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       url: ${{ steps.package.outputs.url }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -35,10 +36,12 @@ jobs:
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
+            TAG="${INPUT_TAG}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -48,10 +51,16 @@ jobs:
             exit 1
           fi
 
+          if [[ ! "${TAG}" =~ ^v[0-9A-Za-z.+_-]+$ ]]; then
+            echo "Invalid tag format: ${TAG}"
+            exit 1
+          fi
+
           VERSION="${TAG#v}"
           OS="darwin"
           ASSET_NAME="rinter_${VERSION}_${OS}.tar.gz"
-          if [[ "${VERSION}" == *"-rc."* || "${VERSION}" == *"-test."* ]]; then
+          # SemVer pre-release uses a hyphen suffix (e.g. 1.0.0-alpha.1).
+          if [[ "${VERSION}" == *-* ]]; then
             PRERELEASE="true"
           else
             PRERELEASE="false"
@@ -140,6 +149,15 @@ jobs:
           TITLE="${TAG}"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            CURRENT_PRERELEASE="$(gh release view "${TAG}" --json isPrerelease -q .isPrerelease)"
+            DESIRED_PRERELEASE="${{ steps.meta.outputs.prerelease }}"
+            if [[ "${CURRENT_PRERELEASE}" != "${DESIRED_PRERELEASE}" ]]; then
+              if [[ "${DESIRED_PRERELEASE}" == "true" ]]; then
+                gh release edit "${TAG}" --prerelease
+              else
+                gh release edit "${TAG}" --prerelease=false
+              fi
+            fi
             LEGACY_ASSET="rinter_${{ steps.meta.outputs.version }}_darwin_arm64.tar.gz"
             LEGACY_ID="$(gh release view "${TAG}" --json assets -q ".assets[] | select(.name == \"${LEGACY_ASSET}\") | .id" || true)"
             if [[ -n "${LEGACY_ID}" ]]; then
@@ -167,6 +185,7 @@ jobs:
 
   dispatch-formula:
     needs: release-macos
+    if: needs.release-macos.outputs.prerelease != 'true'
     uses: novr/homebrew-taps/.github/workflows/dispatch-formula.yml@03167f7bb20a18f2c4692e5b90e5194940ce13fb
     with:
       formula: rinter

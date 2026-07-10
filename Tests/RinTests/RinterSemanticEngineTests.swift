@@ -71,6 +71,74 @@ import Testing
     }
 }
 
+@Test func semanticEngineMatchesQuestionMarkWildcardInTargetPattern() async throws {
+    let policy = RinPolicy(
+        include: ["Sources/Foo?.swift"],
+        exclude: [],
+        rules: [
+            RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
+        ]
+    )
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in
+            [
+                DiffedSwiftFile(path: "Sources/FooA.swift", source: "func run() {}"),
+                DiffedSwiftFile(path: "Sources/FooBar.swift", source: "func run() {}")
+            ]
+        }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation only for single-character ? wildcard match.")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].file == "Sources/FooA.swift")
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func semanticEngineExcludesQuestionMarkWildcardInTargetPattern() async throws {
+    let policy = RinPolicy(
+        include: ["**/*.swift"],
+        exclude: ["Sources/Foo?.swift"],
+        rules: [
+            RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)
+        ]
+    )
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in
+            [
+                DiffedSwiftFile(path: "Sources/FooA.swift", source: "func run() {}"),
+                DiffedSwiftFile(path: "Sources/FooBar.swift", source: "func run() {}")
+            ]
+        }
+    )
+
+    do {
+        try await engine.check()
+        Issue.record("Expected violation only for non-excluded ? wildcard path.")
+    } catch let error as RinterSemanticEngineError {
+        switch error {
+        case .violations(let violations):
+            #expect(violations.count == 1)
+            #expect(violations[0].file == "Sources/FooBar.swift")
+        default:
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
 @Test func semanticEngineRespectsRuleScope() async throws {
     let policy = RinPolicy(
         include: ["Features/**/*.swift"],

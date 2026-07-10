@@ -131,6 +131,7 @@ struct RinterSemanticEngine {
         let regexPattern = NSRegularExpression.escapedPattern(for: tokenized)
             .replacingOccurrences(of: placeholder, with: ".*")
             .replacingOccurrences(of: "\\*", with: "[^/]*")
+            .replacingOccurrences(of: "\\?", with: "[^/]")
         guard let regex = try? NSRegularExpression(pattern: "^\(regexPattern)$") else {
             return false
         }
