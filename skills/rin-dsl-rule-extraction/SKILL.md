@@ -87,7 +87,7 @@ Follow rin-dsl-rinfile authoring defaults. Prefer `namedFunctions` / `matchingFu
 
 `project_summary`, `applicable_rules` (with `verification_sample` OK/NG), `needs_code_convention_change` (receiver/call-site refactors per rin-dsl-rinfile), `out_of_scope`, `draft_rinfile`, `rinter_validation`.
 
-**Not supported (`out_of_scope`):** import rules, access control, SwiftUI-specific, cross-file resolution, type inference / `typealias`, untyped `throws`, `throws(any Error)`, return/parameter type signatures, call order / 1:1 pairing, helper delegation.
+**Not supported (`out_of_scope`):** import rules, access control, SwiftUI-specific, cross-file resolution, type inference / `typealias`, return/parameter type signatures, call order / 1:1 pairing, helper delegation. `MustThrow` skips plain `throws`, no `throws`, and `throws(any Error)` (literal typed-throws only).
 
 ## Self-check
 
