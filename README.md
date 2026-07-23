@@ -161,7 +161,7 @@ Rule(id: "store_catch_cancellation") {
 
 ## Typed Throws
 
-Literal typed-throws type name only (e.g. `throws(AppError)` in source):
+Literal typed-throws type name only (e.g. `throws(AppError)` in source). `MustThrow` evaluates **only functions with a literal typed-throws annotation** in the signature:
 
 ```swift
 Rule(id: "api_run_throws_app_error") {
@@ -172,7 +172,7 @@ Rule(id: "api_run_throws_app_error") {
 .severity(.error)
 ```
 
-Untyped `throws`, `throws(any Error)`, and `typealias`-dependent types are not matched.
+Functions with plain `throws`, no `throws` clause, `throws(any Error)`, or `typealias`-dependent types are **skipped** (not violations). A violation is reported only when a literal typed throw is present and its type name does not match.
 
 ## Paired Calls
 

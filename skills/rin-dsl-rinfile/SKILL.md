@@ -17,7 +17,7 @@ Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENT
 - `WhenCalls(...).mustAlsoCallAnyOf([...])` — OR
 - `MustHandleError(target:, as:, onPath:, whenUnmentioned:)` — per catch
 - `MustDeclare(..., onPath:)` — per function
-- `MustThrow(type:, onPath:)` — per function; **literal** typed-throws type name only (e.g. `throws(AppError)`)
+- `MustThrow(type:, onPath:)` — per function; **literal** typed-throws only (e.g. `throws(AppError)`). Plain `throws`, no `throws`, and non-literal forms are **skipped**
 - `WhenCalls(name:).inArgument(...).mustUse(...)` — per matching creation; `.mustNotUse(...)` is optional but `mustUse` is required (`.mustNotUse`-only chains are rejected)
 - `Target` / `Rule.scope` — **file** globs only (`*`, `**`, `?`; `?` matches one path segment character)
 
@@ -60,7 +60,7 @@ Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENT
 - No call order / 1:1 pairing guarantee; helper delegation not detected
 - `deinit` / `subscript` excluded from function scope metadata
 - No import rules, access control, cross-file resolution, or type inference / `typealias`
-- Untyped `throws`, `throws(any Error)`, and `typealias`-dependent typed throws are not matched by `MustThrow`
+- Untyped `throws`, no `throws` clause, `throws(any Error)`, and `typealias`-dependent typed throws are **skipped** by `MustThrow` (not violations). Only a present literal typed-throws name is compared; mismatch → violation
 
 ## Pattern catalog
 

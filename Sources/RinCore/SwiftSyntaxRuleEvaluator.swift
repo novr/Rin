@@ -535,12 +535,17 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         }
         var violations: [RinSemanticViolation] = []
         for functionID in targetFunctionIDs {
-            if functionTypedThrowTypes[functionID] != typeName {
+            guard let optionalStored = functionTypedThrowTypes[functionID],
+                  let storedType = optionalStored
+            else {
+                continue
+            }
+            if storedType != typeName {
                 let location = functionLocations[functionID] ?? fileAnchor
                 violations.append(
                     RinSemanticViolation(
                         ruleId: ruleID,
-                        reason: "Required typed throw `\(typeName)` was not found.",
+                        reason: "Expected typed throw `\(typeName)`, found `\(storedType)`.",
                         file: filePath,
                         line: location.0,
                         column: location.1
