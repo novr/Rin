@@ -211,12 +211,13 @@ Skill references:
 ## CLI
 
 ```bash
-rinter [--config <path>] [--rule <id>] [-a|--all-files] [--verbose]
+rinter [--config <path>] [--rule <id>] [-a|--all-files] [--format text|json] [--verbose]
 ```
 
 - `-c`, `--config`: path to `Rinfile.swift` (default: `Rinfile.swift`)
 - `-r`, `--rule`: evaluate only the specified rule id
 - `-a`, `--all-files`: evaluate all Swift files under project root (not just git diff)
+- `--format`: output format — `text` (default) prints human-readable messages; `json` prints a violations array to stdout (`[]` on pass)
 - `-v`, `--verbose`: verbose logs during evaluation
 - `--version`: show rinter version
 - `-h`, `--help`: show help
