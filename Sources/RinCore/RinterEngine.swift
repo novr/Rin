@@ -18,13 +18,16 @@ public struct RinterEngine {
     private let semanticEngine: RinterSemanticEngine
     private let ruleFilter: String?
     private let logger: RinLogger
+    private let outputFormat: RinOutputFormat
+    private let writeStandardOutput: (String) throws -> Void
 
     public init(
         projectRootURL: URL,
         rinfileURL: URL,
         ruleFilter: String? = nil,
         verbose: Bool = false,
-        checkAllFiles: Bool = false
+        checkAllFiles: Bool = false,
+        outputFormat: RinOutputFormat = .text
     ) {
         let logger = ConsoleLogger(verbose: verbose)
         self.semanticEngine = RinterSemanticEngine(
@@ -35,16 +38,22 @@ public struct RinterEngine {
         )
         self.ruleFilter = ruleFilter
         self.logger = logger
+        self.outputFormat = outputFormat
+        self.writeStandardOutput = Self.defaultWriteStandardOutput
     }
 
     init(
         semanticEngine: RinterSemanticEngine,
         ruleFilter: String? = nil,
-        verbose: Bool = false
+        verbose: Bool = false,
+        outputFormat: RinOutputFormat = .text,
+        writeStandardOutput: @escaping (String) throws -> Void = RinterEngine.defaultWriteStandardOutput
     ) {
         self.semanticEngine = semanticEngine
         self.ruleFilter = ruleFilter
         self.logger = ConsoleLogger(verbose: verbose)
+        self.outputFormat = outputFormat
+        self.writeStandardOutput = writeStandardOutput
     }
 
     public func run() async throws {
@@ -54,20 +63,32 @@ public struct RinterEngine {
     private func runCheck() async throws {
         do {
             try await semanticEngine.check(ruleID: ruleFilter)
-            logger.success("Semantic policy check passed.")
+            if outputFormat == .json {
+                try writeViolationsJSON([])
+            } else {
+                logger.success("Semantic policy check passed.")
+            }
         } catch let semanticError as RinterSemanticEngineError {
             switch semanticError {
             case .noSwiftFilesToCheck:
-                logger.info("No Swift files to evaluate.")
+                if outputFormat == .json {
+                    try writeViolationsJSON([])
+                } else {
+                    logger.info("No Swift files to evaluate.")
+                }
             case .violations(let violations):
-                logger.error("Semantic policy violation(s) found.")
-                for violation in violations {
-                    let location = [
-                        violation.file ?? "unknown",
-                        violation.line.map(String.init) ?? "?",
-                        violation.column.map(String.init) ?? "?"
-                    ].joined(separator: ":")
-                    logger.error("\(location): [\(violation.ruleId)] \(violation.reason)")
+                if outputFormat == .json {
+                    try writeViolationsJSON(violations)
+                } else {
+                    logger.error("Semantic policy violation(s) found.")
+                    for violation in violations {
+                        let location = [
+                            violation.file ?? "unknown",
+                            violation.line.map(String.init) ?? "?",
+                            violation.column.map(String.init) ?? "?"
+                        ].joined(separator: ":")
+                        logger.error("\(location): [\(violation.ruleId)] \(violation.reason)")
+                    }
                 }
                 throw RinterEngineError.violation("Semantic policy violations detected.")
             case .runtime(let reason):
@@ -76,5 +97,16 @@ public struct RinterEngine {
         } catch {
             throw RinterEngineError.runtime(error.localizedDescription)
         }
+    }
+
+    private func writeViolationsJSON(_ violations: [RinSemanticViolation]) throws {
+        try writeStandardOutput(try RinViolationJSON.encodedLine(violations))
+    }
+
+    private static func defaultWriteStandardOutput(_ line: String) throws {
+        guard let data = line.data(using: .utf8) else {
+            throw RinterEngineError.runtime("Failed to encode JSON output.")
+        }
+        FileHandle.standardOutput.write(data)
     }
 }

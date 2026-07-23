@@ -1,6 +1,6 @@
 import Foundation
 
-struct RinSemanticViolation: Equatable {
+struct RinSemanticViolation: Equatable, Codable {
     let ruleId: String
     let reason: String
     let file: String?

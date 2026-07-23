@@ -2,6 +2,8 @@ import ArgumentParser
 import Foundation
 import RinCore
 
+extension RinOutputFormat: ExpressibleByArgument {}
+
 @main
 struct RinterCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -22,6 +24,9 @@ struct RinterCLI: AsyncParsableCommand {
     @Flag(name: [.short, .long], help: "Evaluate all Swift files under project root")
     var allFiles = false
 
+    @Option(name: .long, help: "Output format: text or json")
+    var format: RinOutputFormat = .text
+
     mutating func run() async throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let engine = RinterEngine(
@@ -29,7 +34,8 @@ struct RinterCLI: AsyncParsableCommand {
             rinfileURL: root.appendingPathComponent(config),
             ruleFilter: rule,
             verbose: verbose,
-            checkAllFiles: allFiles
+            checkAllFiles: allFiles,
+            outputFormat: format
         )
 
         do {
@@ -37,7 +43,9 @@ struct RinterCLI: AsyncParsableCommand {
         } catch let error as RinterEngineError {
             switch error {
             case .violation(let message):
-                fputs("❌ \(message)\n", stderr)
+                if format != .json {
+                    fputs("❌ \(message)\n", stderr)
+                }
                 throw ExitCode(rawValue: 1)
             case .runtime(let message):
                 fputs("❌ \(message)\n", stderr)
