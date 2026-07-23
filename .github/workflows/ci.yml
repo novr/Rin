@@ -18,6 +18,21 @@ jobs:
         with:
           swift-version: "6.2"
 
+      - name: Test
+        run: swift test
+
+  release-build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Swift 6.2
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2.4.0
+        with:
+          swift-version: "6.2"
+
       - name: Build universal release binary
         shell: bash
         run: |
@@ -28,6 +43,3 @@ jobs:
           lipo -create -output dist/rinter .build/arm64/release/rinter .build/x86_64/release/rinter
           lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*arm64'
           lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*x86_64'
-
-      - name: Test
-        run: swift test
