@@ -18,6 +18,7 @@ public struct RinterEngine {
     private let semanticEngine: RinterSemanticEngine
     private let ruleFilter: String?
     private let logger: RinLogger
+    private let failOnEmpty: Bool
     private let outputFormat: RinOutputFormat
     private let writeStandardOutput: (String) throws -> Void
 
@@ -27,6 +28,7 @@ public struct RinterEngine {
         ruleFilter: String? = nil,
         verbose: Bool = false,
         checkAllFiles: Bool = false,
+        failOnEmpty: Bool = false,
         outputFormat: RinOutputFormat = .text
     ) {
         let logger = ConsoleLogger(verbose: verbose)
@@ -38,6 +40,7 @@ public struct RinterEngine {
         )
         self.ruleFilter = ruleFilter
         self.logger = logger
+        self.failOnEmpty = failOnEmpty
         self.outputFormat = outputFormat
         self.writeStandardOutput = Self.defaultWriteStandardOutput
     }
@@ -46,12 +49,14 @@ public struct RinterEngine {
         semanticEngine: RinterSemanticEngine,
         ruleFilter: String? = nil,
         verbose: Bool = false,
+        failOnEmpty: Bool = false,
         outputFormat: RinOutputFormat = .text,
         writeStandardOutput: @escaping (String) throws -> Void = RinterEngine.defaultWriteStandardOutput
     ) {
         self.semanticEngine = semanticEngine
         self.ruleFilter = ruleFilter
         self.logger = ConsoleLogger(verbose: verbose)
+        self.failOnEmpty = failOnEmpty
         self.outputFormat = outputFormat
         self.writeStandardOutput = writeStandardOutput
     }
@@ -71,6 +76,9 @@ public struct RinterEngine {
         } catch let semanticError as RinterSemanticEngineError {
             switch semanticError {
             case .noSwiftFilesToCheck:
+                if failOnEmpty {
+                    throw RinterEngineError.violation("No Swift files to evaluate.")
+                }
                 if outputFormat == .json {
                     try writeViolationsJSON([])
                 } else {

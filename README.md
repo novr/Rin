@@ -211,12 +211,13 @@ Skill references:
 ## CLI
 
 ```bash
-rinter [--config <path>] [--rule <id>] [-a|--all-files] [--format text|json] [--verbose]
+rinter [--config <path>] [--rule <id>] [-a|--all-files] [--fail-on-empty] [--format text|json] [--verbose]
 ```
 
 - `-c`, `--config`: path to `Rinfile.swift` (default: `Rinfile.swift`)
 - `-r`, `--rule`: evaluate only the specified rule id
 - `-a`, `--all-files`: evaluate all Swift files under project root (not just git diff)
+- `--fail-on-empty`: exit `1` when no Swift files are in scope after include/exclude filters (default: exit `0` with an info message, or `[]` in JSON mode)
 - `--format`: output format — `text` (default) prints human-readable messages; `json` prints a violations array to stdout (`[]` on pass)
 - `-v`, `--verbose`: verbose logs during evaluation
 - `--version`: show rinter version
@@ -249,13 +250,13 @@ jobs:
           shasum -a 256 -c checksums.txt
           tar -xzf "rinter_${RINTER_VERSION#v}_darwin.tar.gz"
           chmod +x ./rinter
-      - run: ./rinter --config Rinfile.swift
+      - run: ./rinter --config Rinfile.swift --fail-on-empty
 ```
 
 ## How It Works
 
 - Parse `Rinfile.swift` with SwiftSyntax.
-- Collect changed Swift files from git diff (or all files with `--all-files`).
+- Collect changed Swift files from git diff (or all files with `--all-files`), then apply `Target` include/exclude filters. When no files remain in scope, exit `0` by default; use `--fail-on-empty` to exit `1` instead.
 - Evaluate each rule **per unit** (function, `catch`, or trigger call) using `onPath` scopes.
 - Predicates: `MustCall`, `MustCallAnyOf`, `MustHandleError`, `WhenCalls`, `MustDeclare`, `MustThrow`, `WhenCalls(name:)`.
 - Exit non-zero on violations or runtime errors (`0` pass, `1` violations, `2` errors).

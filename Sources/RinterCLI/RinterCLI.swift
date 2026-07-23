@@ -24,6 +24,9 @@ struct RinterCLI: AsyncParsableCommand {
     @Flag(name: [.short, .long], help: "Evaluate all Swift files under project root")
     var allFiles = false
 
+    @Flag(name: .long, help: "Exit with code 1 when no Swift files are in scope")
+    var failOnEmpty = false
+
     @Option(name: .long, help: "Output format: text or json")
     var format: RinOutputFormat = .text
 
@@ -35,6 +38,7 @@ struct RinterCLI: AsyncParsableCommand {
             ruleFilter: rule,
             verbose: verbose,
             checkAllFiles: allFiles,
+            failOnEmpty: failOnEmpty,
             outputFormat: format
         )
 
