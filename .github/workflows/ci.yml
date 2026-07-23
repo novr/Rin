@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: macos-latest
@@ -18,6 +22,56 @@ jobs:
         with:
           swift-version: "6.2"
 
+      - name: Resolve Swift version hash
+        id: swift-version
+        shell: bash
+        run: |
+          echo "value=$(swift --version | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-spm-test-${{ steps.swift-version.outputs.value }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-test-${{ steps.swift-version.outputs.value }}-
+            ${{ runner.os }}-spm-test-
+
+      - name: Test
+        run: swift test
+
+  release-build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Swift 6.2
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2.4.0
+        with:
+          swift-version: "6.2"
+
+      - name: Resolve Swift version hash
+        id: swift-version
+        shell: bash
+        run: |
+          echo "value=$(swift --version | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/arm64
+            .build/x86_64
+            ~/.swiftpm
+          key: ${{ runner.os }}-spm-universal-${{ steps.swift-version.outputs.value }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-universal-${{ steps.swift-version.outputs.value }}-
+            ${{ runner.os }}-spm-universal-
+
       - name: Build universal release binary
         shell: bash
         run: |
@@ -28,6 +82,10 @@ jobs:
           lipo -create -output dist/rinter .build/arm64/release/rinter .build/x86_64/release/rinter
           lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*arm64'
           lipo -info dist/rinter | grep -q 'Architectures in the fat file:.*x86_64'
-
-      - name: Test
-        run: swift test
+          for ARCH in arm64 x86_64; do
+            MINOS="$(otool -arch "${ARCH}" -l dist/rinter | awk '/LC_BUILD_VERSION/{f=1} f && /^[[:space:]]*minos /{print $2; exit}')"
+            if [[ "${MINOS}" != "13.0" ]]; then
+              echo "Expected minos 13.0 for ${ARCH}, got ${MINOS}"
+              exit 1
+            fi
+          done
