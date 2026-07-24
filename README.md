@@ -211,7 +211,7 @@ Skill references:
 ## CLI
 
 ```bash
-rinter [--config <path>] [--rule <id>] [-a|--all-files] [--fail-on-empty] [--format text|json] [--verbose]
+rinter [--config <path>] [--rule <id>] [-a|--all-files] [--fail-on-empty] [--format text|json] [--check-config] [--verbose]
 ```
 
 - `-c`, `--config`: path to `Rinfile.swift` (default: `Rinfile.swift`)
@@ -219,6 +219,7 @@ rinter [--config <path>] [--rule <id>] [-a|--all-files] [--fail-on-empty] [--for
 - `-a`, `--all-files`: evaluate all Swift files under project root (not just git diff)
 - `--fail-on-empty`: exit `1` when no Swift files are in scope after include/exclude filters (default: exit `0` with an info message, or `[]` in JSON mode)
 - `--format`: output format — `text` (default) prints human-readable messages; `json` prints a violations array to stdout (`[]` on pass)
+- `--check-config`: validate Rinfile syntax, unique rule IDs, non-empty rule bodies, and rule clauses without evaluating source files; configuration failures exit `2`
 - `-v`, `--verbose`: verbose logs during evaluation
 - `--version`: show rinter version
 - `-h`, `--help`: show help

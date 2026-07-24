@@ -29,6 +29,10 @@ enum SwiftSyntaxRuleEvaluatorError: Error, LocalizedError {
 }
 
 struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
+    static func validate(rule: RinRule) throws {
+        _ = try parseRuleBody(rule)
+    }
+
     func evaluate(file: DiffedSwiftFile, policy: RinPolicy) throws -> [RinSemanticViolation] {
         let syntax = Parser.parse(source: file.source)
         guard !syntax.hasError else {
@@ -124,12 +128,7 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         let fileAnchor = calls.first.map { ($0.line, $0.column) }
             ?? catchClauses.first.map { ($0.line, $0.column) }
             ?? (1, 1)
-        let parsedRuleBody: ParsedRuleBody
-        do {
-            parsedRuleBody = try RuleBodyParser.parse(body: rule.body)
-        } catch let parserError as RuleBodyParserError {
-            throw SwiftSyntaxRuleEvaluatorError.invalidRuleBody(ruleID: rule.id, reason: parserError.localizedDescription)
-        }
+        let parsedRuleBody = try Self.parseRuleBody(rule)
 
         for mustCall in parsedRuleBody.mustCallRules {
             violations.append(
@@ -292,6 +291,17 @@ struct SwiftSyntaxRuleEvaluator: RinRuleEvaluating {
         }
 
         return violations
+    }
+
+    private static func parseRuleBody(_ rule: RinRule) throws -> ParsedRuleBody {
+        do {
+            return try RuleBodyParser.parse(body: rule.body)
+        } catch let parserError as RuleBodyParserError {
+            throw SwiftSyntaxRuleEvaluatorError.invalidRuleBody(
+                ruleID: rule.id,
+                reason: parserError.localizedDescription
+            )
+        }
     }
 
     private func evaluateMustCall(
@@ -1102,7 +1112,9 @@ private enum RuleBodyParser {
             guard let expression = statement.item.as(ExprSyntax.self),
                   let callExpr = expression.as(FunctionCallExprSyntax.self)
             else {
-                continue
+                throw RuleBodyParserError.invalidClause(
+                    "Rule body supports only predicate calls: \(statement.item.trimmedDescription)"
+                )
             }
             let called = calledName(of: callExpr.calledExpression)
             if called == "MustCall" {
