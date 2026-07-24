@@ -21,6 +21,8 @@ public struct RinterEngine {
     private let failOnEmpty: Bool
     private let outputFormat: RinOutputFormat
     private let writeStandardOutput: (String) throws -> Void
+    private let checkConfig: Bool
+    private let validateConfig: () throws -> Void
 
     public init(
         projectRootURL: URL,
@@ -29,9 +31,11 @@ public struct RinterEngine {
         verbose: Bool = false,
         checkAllFiles: Bool = false,
         failOnEmpty: Bool = false,
-        outputFormat: RinOutputFormat = .text
+        outputFormat: RinOutputFormat = .text,
+        checkConfig: Bool = false
     ) {
         let logger = ConsoleLogger(verbose: verbose)
+        let rinfileValidator = RinConfigValidator()
         self.semanticEngine = RinterSemanticEngine(
             projectRootURL: projectRootURL,
             rinfileURL: rinfileURL,
@@ -43,6 +47,10 @@ public struct RinterEngine {
         self.failOnEmpty = failOnEmpty
         self.outputFormat = outputFormat
         self.writeStandardOutput = Self.defaultWriteStandardOutput
+        self.checkConfig = checkConfig
+        self.validateConfig = {
+            try rinfileValidator.validate(at: rinfileURL)
+        }
     }
 
     init(
@@ -51,7 +59,9 @@ public struct RinterEngine {
         verbose: Bool = false,
         failOnEmpty: Bool = false,
         outputFormat: RinOutputFormat = .text,
-        writeStandardOutput: @escaping (String) throws -> Void = RinterEngine.defaultWriteStandardOutput
+        writeStandardOutput: @escaping (String) throws -> Void = RinterEngine.defaultWriteStandardOutput,
+        checkConfig: Bool = false,
+        validateConfig: @escaping () throws -> Void = {}
     ) {
         self.semanticEngine = semanticEngine
         self.ruleFilter = ruleFilter
@@ -59,10 +69,25 @@ public struct RinterEngine {
         self.failOnEmpty = failOnEmpty
         self.outputFormat = outputFormat
         self.writeStandardOutput = writeStandardOutput
+        self.checkConfig = checkConfig
+        self.validateConfig = validateConfig
     }
 
     public func run() async throws {
+        if checkConfig {
+            try runConfigCheck()
+            return
+        }
         try await runCheck()
+    }
+
+    private func runConfigCheck() throws {
+        do {
+            try validateConfig()
+            logger.success("Rinfile configuration is valid.")
+        } catch {
+            throw RinterEngineError.runtime(error.localizedDescription)
+        }
     }
 
     private func runCheck() async throws {

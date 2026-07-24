@@ -9,6 +9,12 @@ Write and revise `Rinfile.swift` using the current Rin (Rinter) DSL. Do not inve
 
 Contributor constraints: [AGENTS.md](https://github.com/novr/Rin/blob/main/AGENTS.md). DSL API: [RinterConfigDSL.swift](https://github.com/novr/Rin/blob/main/Sources/RinCore/RinterConfigDSL.swift). Quick Start examples: [README.md](https://github.com/novr/Rin/blob/main/README.md).
 
+Validate configuration before source evaluation:
+
+```bash
+rinter --config Rinfile.swift --check-config
+```
+
 ## Predicates
 
 - `MustCall(receiver:method:, onPath:)` — per function (default `everyFunction`)

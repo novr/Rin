@@ -30,7 +30,15 @@ struct RinterCLI: AsyncParsableCommand {
     @Option(name: .long, help: "Output format: text or json")
     var format: RinOutputFormat = .text
 
+    @Flag(name: .long, help: "Validate Rinfile.swift without evaluating source files")
+    var checkConfig = false
+
     mutating func run() async throws {
+        if checkConfig && (rule != nil || allFiles || failOnEmpty || format != .text) {
+            fputs("❌ --check-config cannot be combined with --rule, --all-files, --fail-on-empty, or --format json.\n", stderr)
+            throw ExitCode(rawValue: 2)
+        }
+
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let engine = RinterEngine(
             projectRootURL: root,
@@ -39,7 +47,8 @@ struct RinterCLI: AsyncParsableCommand {
             verbose: verbose,
             checkAllFiles: allFiles,
             failOnEmpty: failOnEmpty,
-            outputFormat: format
+            outputFormat: format,
+            checkConfig: checkConfig
         )
 
         do {

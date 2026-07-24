@@ -30,6 +30,22 @@ import Testing
     }
 }
 
+@Test func semanticEngineFailsClosedOnNonPredicateRuleBody() async throws {
+    let policy = RinPolicy(include: [], exclude: [], rules: [
+        RinRule(id: "rule", body: "let value = 1", message: nil, severity: .error)
+    ])
+    let engine = RinterSemanticEngine(
+        projectRootURL: URL(fileURLWithPath: "/tmp"),
+        rinfileURL: URL(fileURLWithPath: "/tmp/Rinfile.swift"),
+        loadPolicy: { _ in policy },
+        loadFiles: { _ in [DiffedSwiftFile(path: "Sources/App.swift", source: "func run() {}")] }
+    )
+
+    await #expect(throws: SwiftSyntaxRuleEvaluatorError.self) {
+        try await engine.check()
+    }
+}
+
 @Test func semanticEnginePassesWhenRequiredMethodExists() async throws {
     let policy = RinPolicy(include: [], exclude: [], rules: [
         RinRule(id: "rule", body: #"MustCall(RuleCallTarget(receiver: .symbol("Analytics"), method: "sendAnalytics"))"#, message: nil, severity: .error)

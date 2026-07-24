@@ -106,7 +106,9 @@ Same output sections as project-path mode.
 ## rinter_validation (mandatory)
 
 ```bash
-cd PROJECT_ROOT && rinter --config Rinfile.swift --all-files
+cd PROJECT_ROOT
+rinter --config Rinfile.swift --check-config
+rinter --config Rinfile.swift --all-files
 ```
 
 If `rinter` is missing, state the blocker and how to install (Homebrew / release binary / `swift build`).
