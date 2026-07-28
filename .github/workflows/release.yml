@@ -186,16 +186,11 @@ jobs:
   dispatch-formula:
     needs: release-macos
     if: needs.release-macos.outputs.prerelease != 'true'
-    uses: novr/homebrew-taps/.github/workflows/dispatch-formula.yml@03167f7bb20a18f2c4692e5b90e5194940ce13fb
+    uses: novr/homebrew-taps/.github/workflows/dispatch-formula.yml@3c774dfd3408b2bf7ecd66ea045d9f85ac3e6ac4
     with:
       formula: rinter
       version: ${{ needs.release-macos.outputs.version }}
-      url: ${{ needs.release-macos.outputs.url }}
       sha256: ${{ needs.release-macos.outputs.sha256 }}
-      desc: "Run semantic policy checks from Rinfile.swift"
-      binary: rinter
-      test_match: "USAGE: rinter"
-      source_repo: ${{ github.repository }}
     secrets:
       NOVRD_BOT_CLIENT_ID: ${{ secrets.NOVRD_BOT_CLIENT_ID }}
       NOVRD_BOT_KEY: ${{ secrets.NOVRD_BOT_KEY }}
